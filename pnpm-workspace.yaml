@@ -1,0 +1,13 @@
+# Single-package layout: the repo root is its own workspace member so pnpm 11
+# reads settings from here.
+packages:
+  - '.'
+nodeLinker: hoisted
+allowBuilds:
+  esbuild: true
+
+# Every harness dependency is a first-party @deepseek-ai package pinned to one
+# release train (0.1.0-rc.x). The cooldown exists to slow adoption of freshly
+# published third-party versions; here it only blocks the pinned set, so it is
+# disabled.
+minimumReleaseAge: 0

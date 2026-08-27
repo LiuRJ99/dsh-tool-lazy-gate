@@ -1,0 +1,532 @@
+import { describe, expect, it } from 'vitest'
+import {
+  apply,
+  capabilityForSkill,
+  capabilityForTool,
+  enabledCapabilities,
+  userInvokedSkillName,
+  userInvokedSkillNames,
+} from '../src/index.ts'
+
+const CAPS = {
+  browser: {
+    enabled: true,
+    skillNames: ['browser'],
+    toolPrefixes: ['browser_'],
+    promptSections: ['tool:bridge-browser'],
+  },
+  computer: {
+    enabled: true,
+    skillNames: ['computer-use'],
+    toolPrefixes: ['computer_use_'],
+    promptSections: ['tool:computer', 'tool:computer-policy'],
+  },
+}
+
+describe('userInvokedSkillName — the unlock signal', () => {
+  it('accepts a USER skill-invocation user/message', () => {
+    const event = { type: 'user/message', data: { source: { kind: 'skill-invocation', name: 'browser' } } }
+    expect(userInvokedSkillName(event)).toBe('browser')
+  })
+
+  it('rejects a MODEL skill tool/call (the dangerous case)', () => {
+    const event = { type: 'tool/call', data: { name: 'skill', arguments: JSON.stringify({ name: 'browser' }) } }
+    expect(userInvokedSkillName(event)).toBeUndefined()
+  })
+
+  it('rejects a plain user message (no invocation source)', () => {
+    const event = { type: 'user/message', data: { source: { kind: 'user' } } }
+    expect(userInvokedSkillName(event)).toBeUndefined()
+  })
+
+  it('rejects a non-message event', () => {
+    expect(userInvokedSkillName({ type: 'assistant/message' })).toBeUndefined()
+  })
+
+  it('rejects garbage input without throwing', () => {
+    expect(userInvokedSkillName(null)).toBeUndefined()
+    expect(userInvokedSkillName(undefined)).toBeUndefined()
+    expect(userInvokedSkillName(42)).toBeUndefined()
+  })
+})
+
+describe('userInvokedSkillNames — pre-step unlock signal', () => {
+  it('extracts and deduplicates skill gestures from trusted user messages', () => {
+    const messages = [{
+      source: { kind: 'user' },
+      content: [{ type: 'text', text: 'Please use /browser then /computer-use and /browser again.' }],
+    }]
+    expect(userInvokedSkillNames(messages)).toEqual(['browser', 'computer-use'])
+  })
+
+  it('matches whitespace-bounded gestures like the skill plugin', () => {
+    const messages = [{
+      source: { kind: 'user' },
+      content: [{ type: 'text', text: '/browser /computer-use /browser' }],
+    }]
+    expect(userInvokedSkillNames(messages)).toEqual(['browser', 'computer-use'])
+  })
+
+  it('ignores model-shaped messages, paths, and non-text blocks', () => {
+    const messages = [
+      {
+        source: { kind: 'assistant' },
+        content: [{ type: 'text', text: '/browser /computer-use' }],
+      },
+      {
+        source: { kind: 'user' },
+        content: [
+          { type: 'text', text: '/usr/bin and 5/8 are not skill gestures' },
+          { type: 'image', data: '/browser' },
+        ],
+      },
+    ]
+    expect(userInvokedSkillNames(messages)).toEqual([])
+  })
+})
+
+describe('capability routing', () => {
+  it('maps skill names to capabilities', () => {
+    expect(capabilityForSkill(CAPS, 'browser')).toBe('browser')
+    expect(capabilityForSkill(CAPS, 'computer-use')).toBe('computer')
+    expect(capabilityForSkill(CAPS, 'unknown')).toBeUndefined()
+  })
+
+  it('maps tool prefixes to capabilities', () => {
+    expect(capabilityForTool(CAPS, 'browser_snapshot')).toBe('browser')
+    expect(capabilityForTool(CAPS, 'computer_use_click')).toBe('computer')
+    expect(capabilityForTool(CAPS, 'bash')).toBeUndefined()
+  })
+
+  it('does not match prefix as substring (only startswith)', () => {
+    expect(capabilityForTool(CAPS, 'my_browser_tool')).toBeUndefined()
+  })
+})
+
+describe('enabledCapabilities — the enable/disable switch', () => {
+  it('drops capabilities whose enabled flag is false', () => {
+    const mixed = {
+      browser: { enabled: true, skillNames: ['browser'], toolPrefixes: ['browser_'], promptSections: [] },
+      computer: { enabled: false, skillNames: ['computer-use'], toolPrefixes: ['computer_use_'], promptSections: [] },
+    }
+    const result = enabledCapabilities(mixed)
+    expect(Object.keys(result)).toEqual(['browser'])
+  })
+
+  it('keeps a capability when enabled is omitted (defaults true)', () => {
+    const mixed = {
+      browser: { enabled: undefined, skillNames: ['browser'], toolPrefixes: ['browser_'], promptSections: [] },
+    }
+    const result = enabledCapabilities(mixed as unknown as Record<string, never>)
+    expect(Object.keys(result)).toEqual(['browser'])
+  })
+})
+
+describe('10-case capability gate state machine (including no-plugin degradation)', () => {
+  type Handler = (...args: any[]) => any
+
+  function createMockContext() {
+    const handlers = new Map<string, Handler[]>()
+    let guardFn: ((exec: any) => string | undefined) | undefined
+    return {
+      handlers,
+      getGuard: () => guardFn,
+      context: {
+        get: (_service: string) => undefined,
+        inject: (_deps: string[], cb: (scope: any) => void) => {
+          cb({ settings: { register: () => undefined }, get: () => undefined })
+        },
+        on: (event: string, handler: Handler) => {
+          handlers.set(event, [...(handlers.get(event) ?? []), handler])
+        },
+        tools: {
+          guard: (fn: (exec: any) => string | undefined) => {
+            guardFn = fn
+          },
+          schemas: () => [
+            { name: 'browser_snapshot' },
+            { name: 'browser_click' },
+            { name: 'computer_use_click' },
+            { name: 'bash' },
+          ],
+        },
+      },
+    }
+  }
+
+  // Case 1: Initial state - tools are locked by default and denied via tools.restrict
+  it('Case 1: initial session start locks tools and calls tools.restrict with matching prefixes', async () => {
+    const { context, handlers } = createMockContext()
+    const deniedTools: string[][] = []
+    const session = { events: [] }
+    const agent = {
+      session,
+      ctx: {
+        tools: {
+          schemas: () => [{ name: 'browser_snapshot' }, { name: 'computer_use_click' }, { name: 'bash' }],
+          restrict: ({ deny }: { deny: string[] }) => {
+            deniedTools.push(deny)
+            return () => undefined
+          },
+        },
+      },
+    }
+
+    apply(context as never, { capabilities: CAPS })
+    const preStep = handlers.get('agent/pre-step')?.[0]
+    expect(preStep).toBeDefined()
+
+    await preStep?.({
+      agent,
+      messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: 'Hello, what tools do you have?' }] }],
+      turn: 1,
+      step: 1,
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'enter', messages: [] }))
+
+    expect(deniedTools).toEqual([['browser_snapshot'], ['computer_use_click']])
+  })
+
+  // Case 2: Execution guard blocks locked tools
+  it('Case 2: tools.guard denies execution when capability is locked with helpful hint', async () => {
+    const { context, handlers, getGuard } = createMockContext()
+    const session = { events: [] }
+    const agent = {
+      session,
+      ctx: {
+        tools: {
+          schemas: () => [{ name: 'browser_snapshot' }, { name: 'bash' }],
+          restrict: () => () => undefined,
+        },
+      },
+    }
+
+    apply(context as never, { capabilities: CAPS })
+    const preStep = handlers.get('agent/pre-step')?.[0]
+    await preStep?.({
+      agent,
+      messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: 'Hello' }] }],
+      turn: 1,
+      step: 1,
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'enter', messages: [] }))
+
+    const guard = getGuard()
+    expect(guard).toBeDefined()
+
+    // Gated tool is denied
+    const blocked = guard?.({ agent, name: 'browser_snapshot' })
+    expect(blocked).toContain('"browser_snapshot" is locked in this session')
+    expect(blocked).toContain('/browser')
+
+    // Non-gated tool is allowed
+    const allowed = guard?.({ agent, name: 'bash' })
+    expect(allowed).toBeUndefined()
+  })
+
+  // Case 3: Pre-step user gesture unlocks capability
+  it('Case 3: user gesture (/browser) in user message unlocks capability at pre-step', async () => {
+    const { context, handlers, getGuard } = createMockContext()
+    let browserDisposed = false
+    const session = { events: [] }
+    const agent = {
+      session,
+      ctx: {
+        tools: {
+          schemas: () => [{ name: 'browser_snapshot' }, { name: 'computer_use_click' }],
+          restrict: ({ deny }: { deny: string[] }) => {
+            return () => {
+              if (deny.includes('browser_snapshot')) browserDisposed = true
+            }
+          },
+        },
+      },
+    }
+
+    apply(context as never, { capabilities: CAPS })
+    const preStep = handlers.get('agent/pre-step')?.[0]
+
+    await preStep?.({
+      agent,
+      messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: '/browser search google' }] }],
+      turn: 1,
+      step: 1,
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'enter', messages: [] }))
+
+    expect(browserDisposed).toBe(true)
+    const guard = getGuard()
+    expect(guard?.({ agent, name: 'browser_snapshot' })).toBeUndefined()
+    expect(guard?.({ agent, name: 'computer_use_click' })).toBeDefined()
+  })
+
+  // Case 4: Durable user/message event unlocks capability
+  it('Case 4: durable user/message with skill-invocation source unlocks capability via session/event', async () => {
+    const { context, handlers, getGuard } = createMockContext()
+    let computerDisposed = false
+    const session = { events: [] }
+    const agent = {
+      session,
+      ctx: {
+        tools: {
+          schemas: () => [{ name: 'computer_use_click' }],
+          restrict: () => () => { computerDisposed = true },
+        },
+      },
+    }
+
+    apply(context as never, { capabilities: CAPS })
+    const preStep = handlers.get('agent/pre-step')?.[0]
+    await preStep?.({
+      agent,
+      messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: 'plain message' }] }],
+      turn: 1,
+      step: 1,
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'enter', messages: [] }))
+
+    const guard = getGuard()
+    expect(guard?.({ agent, name: 'computer_use_click' })).toBeDefined()
+
+    const sessionEvent = handlers.get('session/event')?.[0]
+    sessionEvent?.(session, {
+      type: 'user/message',
+      data: { source: { kind: 'skill-invocation', name: 'computer-use' } },
+    })
+
+    expect(computerDisposed).toBe(true)
+    expect(guard?.({ agent, name: 'computer_use_click' })).toBeUndefined()
+  })
+
+  // Case 5: Model tool call does not unlock capability (security boundary)
+  it('Case 5: model calling skill("browser") via tool/call cannot unlock capability', async () => {
+    const { context, handlers, getGuard } = createMockContext()
+    let browserDisposed = false
+    const session = { events: [] }
+    const agent = {
+      session,
+      ctx: {
+        tools: {
+          schemas: () => [{ name: 'browser_snapshot' }],
+          restrict: () => () => { browserDisposed = true },
+        },
+      },
+    }
+
+    apply(context as never, { capabilities: CAPS })
+    const preStep = handlers.get('agent/pre-step')?.[0]
+    await preStep?.({
+      agent,
+      messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: 'plain message' }] }],
+      turn: 1,
+      step: 1,
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'enter', messages: [] }))
+
+    // Model tries to unlock by emitting tool/call
+    const sessionEvent = handlers.get('session/event')?.[0]
+    sessionEvent?.(session, {
+      type: 'tool/call',
+      data: { name: 'skill', arguments: JSON.stringify({ name: 'browser' }) },
+    })
+
+    expect(browserDisposed).toBe(false)
+    const guard = getGuard()
+    expect(guard?.({ agent, name: 'browser_snapshot' })).toBeDefined()
+  })
+
+  // Case 6: Session resume reconstructs prior unlocks from durable log
+  it('Case 6: session resume reconstructs prior unlocks from durable log (only skill-invocation events)', async () => {
+    const { context, handlers, getGuard } = createMockContext()
+    const session = {
+      events: [
+        { type: 'user/message', data: { source: { kind: 'user' } } },
+        { type: 'tool/call', data: { name: 'skill', arguments: '{"name":"computer-use"}' } },
+        { type: 'user/message', data: { source: { kind: 'skill-invocation', name: 'browser' } } },
+      ],
+    }
+    const deniedTools: string[][] = []
+    const agent = {
+      session,
+      ctx: {
+        tools: {
+          schemas: () => [{ name: 'browser_snapshot' }, { name: 'computer_use_click' }],
+          restrict: ({ deny }: { deny: string[] }) => {
+            deniedTools.push(deny)
+            return () => undefined
+          },
+        },
+      },
+    }
+
+    apply(context as never, { capabilities: CAPS })
+    const preStep = handlers.get('agent/pre-step')?.[0]
+    await preStep?.({
+      agent,
+      messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: 'resume step' }] }],
+      turn: 2,
+      step: 1,
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'enter', messages: [] }))
+
+    // Browser was unlocked in past user event, so only computer is denied
+    expect(deniedTools).toEqual([['computer_use_click']])
+    const guard = getGuard()
+    expect(guard?.({ agent, name: 'browser_snapshot' })).toBeUndefined()
+    expect(guard?.({ agent, name: 'computer_use_click' })).toBeDefined()
+  })
+
+  // Case 7: System prompt section suppression when capability is locked
+  it('Case 7: system-prompt/assemble suppresses prompt sections when capability is locked', async () => {
+    const { context, handlers } = createMockContext()
+    const session = { events: [] }
+    const agent = {
+      session,
+      ctx: {
+        tools: {
+          schemas: () => [{ name: 'browser_snapshot' }, { name: 'computer_use_click' }],
+          restrict: () => () => undefined,
+        },
+      },
+    }
+
+    apply(context as never, { capabilities: CAPS })
+    const preStep = handlers.get('agent/pre-step')?.[0]
+    await preStep?.({
+      agent,
+      messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: 'plain user message' }] }],
+      turn: 1,
+      step: 1,
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'enter', messages: [] }))
+
+    const assembleHandler = handlers.get('system-prompt/assemble')?.[0]
+    expect(assembleHandler).toBeDefined()
+
+    const fullAssembly = {
+      sections: [
+        { name: 'general:intro' },
+        { name: 'tool:bridge-browser' },
+        { name: 'tool:computer' },
+        { name: 'tool:computer-policy' },
+        { name: 'general:outro' },
+      ],
+    }
+
+    const filtered = await assembleHandler?.({}, { agent }, async () => fullAssembly)
+    expect(filtered.sections.map((s: any) => s.name)).toEqual(['general:intro', 'general:outro'])
+  })
+
+  // Case 8: System prompt section retention when capability is unlocked
+  it('Case 8: system-prompt/assemble preserves prompt sections once capability is unlocked', async () => {
+    const { context, handlers } = createMockContext()
+    const session = { events: [] }
+    const agent = {
+      session,
+      ctx: {
+        tools: {
+          schemas: () => [{ name: 'browser_snapshot' }, { name: 'computer_use_click' }],
+          restrict: () => () => undefined,
+        },
+      },
+    }
+
+    apply(context as never, { capabilities: CAPS })
+    const preStep = handlers.get('agent/pre-step')?.[0]
+    // Unlock browser via user gesture
+    await preStep?.({
+      agent,
+      messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: '/browser search' }] }],
+      turn: 1,
+      step: 1,
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'enter', messages: [] }))
+
+    const assembleHandler = handlers.get('system-prompt/assemble')?.[0]
+    const fullAssembly = {
+      sections: [
+        { name: 'general:intro' },
+        { name: 'tool:bridge-browser' },
+        { name: 'tool:computer' },
+      ],
+    }
+
+    const filtered = await assembleHandler?.({}, { agent }, async () => fullAssembly)
+    // browser section preserved, computer section still filtered
+    expect(filtered.sections.map((s: any) => s.name)).toEqual(['general:intro', 'tool:bridge-browser'])
+  })
+
+  // Case 9: Disabled capability switch (enabled: false)
+  it('Case 9: disabled capability (enabled: false) is completely bypassed from gating', async () => {
+    const { context, handlers, getGuard } = createMockContext()
+    const customCaps = {
+      browser: { enabled: false, skillNames: ['browser'], toolPrefixes: ['browser_'], promptSections: ['tool:bridge-browser'] },
+      computer: { enabled: true, skillNames: ['computer-use'], toolPrefixes: ['computer_use_'], promptSections: ['tool:computer'] },
+    }
+    const deniedTools: string[][] = []
+    const session = { events: [] }
+    const agent = {
+      session,
+      ctx: {
+        tools: {
+          schemas: () => [{ name: 'browser_snapshot' }, { name: 'computer_use_click' }],
+          restrict: ({ deny }: { deny: string[] }) => {
+            deniedTools.push(deny)
+            return () => undefined
+          },
+        },
+      },
+    }
+
+    apply(context as never, { capabilities: customCaps })
+    const preStep = handlers.get('agent/pre-step')?.[0]
+    await preStep?.({
+      agent,
+      messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: 'plain message' }] }],
+      turn: 1,
+      step: 1,
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'enter', messages: [] }))
+
+    // Only enabled capability (computer) is denied, browser is completely ignored/open
+    expect(deniedTools).toEqual([['computer_use_click']])
+
+    const guard = getGuard()
+    expect(guard?.({ agent, name: 'browser_snapshot' })).toBeUndefined()
+    expect(guard?.({ agent, name: 'computer_use_click' })).toBeDefined()
+  })
+
+  // Case 10: Graceful degradation / no-plugin fallback
+  it('Case 10: graceful degradation when gated plugin is not installed (no matching tool schemas)', async () => {
+    const { context, handlers } = createMockContext()
+    let restrictCalled = false
+    const session = { events: [] }
+    const agent = {
+      session,
+      ctx: {
+        tools: {
+          // No browser_* or computer_use_* tools registered in profile
+          schemas: () => [{ name: 'bash' }, { name: 'read' }, { name: 'write' }],
+          restrict: () => {
+            restrictCalled = true
+            return () => undefined
+          },
+        },
+      },
+    }
+
+    apply(context as never, { capabilities: CAPS })
+    const preStep = handlers.get('agent/pre-step')?.[0]
+
+    // Should complete cleanly without error or unnecessary restrict calls
+    await expect(preStep?.({
+      agent,
+      messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: 'execute command' }] }],
+      turn: 1,
+      step: 1,
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'enter', messages: [] }))).resolves.toBeDefined()
+
+    expect(restrictCalled).toBe(false)
+  })
+})

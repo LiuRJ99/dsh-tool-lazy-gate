@@ -1,0 +1,89 @@
+{
+  "name": "dsh-tool-lazy-gate",
+  "description": "Session-lazy capability gate for DSH: hides and blocks high-privilege tool families (browser_*, computer_use_*) until the user explicitly invokes the matching skill, with a bypass-proof execution guard and resume reconstruction",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "author": "LiuRJ99",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LiuRJ99/dsh-tool-lazy-gate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LiuRJ99/dsh-tool-lazy-gate/issues"
+  },
+  "homepage": "https://github.com/LiuRJ99/dsh-tool-lazy-gate#readme",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "lazy-gate",
+    "tool-gate",
+    "capability-gate",
+    "security"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "prepublishOnly": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": ">=0.1.0-rc.5 <0.1.0",
+    "@deepseek-ai/dsh-settings": ">=0.1.0-rc.5 <0.1.0",
+    "@deepseek-ai/dsh-system-prompt": ">=0.1.0-rc.5 <0.1.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.5 <0.1.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": ">=0.1.0-rc.5 <0.1.0",
+    "@deepseek-ai/dsh-settings": ">=0.1.0-rc.5 <0.1.0",
+    "@deepseek-ai/dsh-system-prompt": ">=0.1.0-rc.5 <0.1.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.5 <0.1.0",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@types/node": "^22.20.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  },
+  "packageManager": "pnpm@11.21.0"
+}
