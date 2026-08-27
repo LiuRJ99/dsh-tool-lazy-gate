@@ -30,11 +30,11 @@ temptation while keeping the capability one explicit user gesture away.
 ## Install
 
 ```sh
-# local checkout
-dsh plugin --profile <name> add <path>/dsh-tool-lazy-gate
+# Install from GitHub repository
+dsh plugin --profile web add github:LiuRJ99/dsh-tool-lazy-gate
 
-# published
-dsh plugin --profile <name> add dsh-tool-lazy-gate
+# Install from local checkout
+dsh plugin --profile web add <path>/dsh-tool-lazy-gate
 ```
 
 ## Configuration
