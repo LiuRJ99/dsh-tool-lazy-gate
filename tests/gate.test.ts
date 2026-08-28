@@ -122,7 +122,7 @@ describe('enabledCapabilities — the enable/disable switch', () => {
   })
 })
 
-describe('10-case capability gate state machine (including no-plugin degradation)', () => {
+describe('capability gate state machine (including first-assembly and no-plugin behavior)', () => {
   type Handler = (...args: any[]) => any
 
   function createMockContext() {
@@ -376,8 +376,103 @@ describe('10-case capability gate state machine (including no-plugin degradation
     expect(guard?.({ agent, name: 'computer_use_click' })).toBeDefined()
   })
 
-  // Case 7: System prompt section suppression when capability is locked
-  it('Case 7: system-prompt/assemble suppresses prompt sections when capability is locked', async () => {
+  // Case 7: First system-prompt assembly initializes the gate state
+  it('Case 7: first system-prompt/assemble filters locked sections and initializes the guard before pre-step', async () => {
+    const { context, handlers, getGuard } = createMockContext()
+    const deniedTools: string[][] = []
+    const session = { events: [] }
+    const agent = {
+      session,
+      ctx: {
+        tools: {
+          schemas: () => [{ name: 'browser_snapshot' }, { name: 'computer_use_click' }],
+          restrict: ({ deny }: { deny: string[] }) => {
+            deniedTools.push(deny)
+            return () => undefined
+          },
+        },
+      },
+    }
+
+    apply(context as never, { capabilities: CAPS })
+    const assembleHandler = handlers.get('system-prompt/assemble')?.[0]
+    expect(assembleHandler).toBeDefined()
+
+    const fullAssembly = {
+      sections: [
+        { name: 'general:intro' },
+        { name: 'tool:bridge-browser' },
+        { name: 'tool:computer' },
+        { name: 'general:outro' },
+      ],
+    }
+
+    // Agent loop assembles the prompt before dispatching agent/pre-step.
+    const filtered = await assembleHandler?.({}, { agent }, async () => fullAssembly)
+    expect(filtered.sections.map((s: any) => s.name)).toEqual(['general:intro', 'general:outro'])
+    expect(getGuard()?.({ agent, name: 'browser_snapshot' })).toContain('is locked in this session')
+
+    const preStep = handlers.get('agent/pre-step')?.[0]
+    await preStep?.({
+      agent,
+      messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: 'plain user message' }] }],
+      turn: 1,
+      step: 1,
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'enter', messages: [] }))
+    expect(deniedTools).toEqual([['browser_snapshot'], ['computer_use_click']])
+  })
+
+  // Case 8: First system-prompt assembly restores a resumed capability
+  it('Case 8: first system-prompt/assemble restores durable unlocks before pre-step', async () => {
+    const { context, handlers, getGuard } = createMockContext()
+    const deniedTools: string[][] = []
+    const session = {
+      events: [
+        { type: 'user/message', data: { source: { kind: 'skill-invocation', name: 'browser' } } },
+      ],
+    }
+    const agent = {
+      session,
+      ctx: {
+        tools: {
+          schemas: () => [{ name: 'browser_snapshot' }, { name: 'computer_use_click' }],
+          restrict: ({ deny }: { deny: string[] }) => {
+            deniedTools.push(deny)
+            return () => undefined
+          },
+        },
+      },
+    }
+
+    apply(context as never, { capabilities: CAPS })
+    const assembleHandler = handlers.get('system-prompt/assemble')?.[0]
+    const fullAssembly = {
+      sections: [
+        { name: 'general:intro' },
+        { name: 'tool:bridge-browser' },
+        { name: 'tool:computer' },
+      ],
+    }
+
+    const filtered = await assembleHandler?.({}, { agent }, async () => fullAssembly)
+    expect(filtered.sections.map((s: any) => s.name)).toEqual(['general:intro', 'tool:bridge-browser'])
+    expect(getGuard()?.({ agent, name: 'browser_snapshot' })).toBeUndefined()
+    expect(getGuard()?.({ agent, name: 'computer_use_click' })).toContain('is locked in this session')
+
+    const preStep = handlers.get('agent/pre-step')?.[0]
+    await preStep?.({
+      agent,
+      messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: 'resume step' }] }],
+      turn: 2,
+      step: 1,
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'enter', messages: [] }))
+    expect(deniedTools).toEqual([['computer_use_click']])
+  })
+
+  // Case 9: System prompt section suppression when capability is locked
+  it('Case 9: system-prompt/assemble suppresses prompt sections when capability is locked', async () => {
     const { context, handlers } = createMockContext()
     const session = { events: [] }
     const agent = {
@@ -417,8 +512,8 @@ describe('10-case capability gate state machine (including no-plugin degradation
     expect(filtered.sections.map((s: any) => s.name)).toEqual(['general:intro', 'general:outro'])
   })
 
-  // Case 8: System prompt section retention when capability is unlocked
-  it('Case 8: system-prompt/assemble preserves prompt sections once capability is unlocked', async () => {
+  // Case 10: System prompt section retention when capability is unlocked
+  it('Case 10: system-prompt/assemble preserves prompt sections once capability is unlocked', async () => {
     const { context, handlers } = createMockContext()
     const session = { events: [] }
     const agent = {
@@ -456,8 +551,8 @@ describe('10-case capability gate state machine (including no-plugin degradation
     expect(filtered.sections.map((s: any) => s.name)).toEqual(['general:intro', 'tool:bridge-browser'])
   })
 
-  // Case 9: Disabled capability switch (enabled: false)
-  it('Case 9: disabled capability (enabled: false) is completely bypassed from gating', async () => {
+  // Case 11: Disabled capability switch (enabled: false)
+  it('Case 11: disabled capability (enabled: false) is completely bypassed from gating', async () => {
     const { context, handlers, getGuard } = createMockContext()
     const customCaps = {
       browser: { enabled: false, skillNames: ['browser'], toolPrefixes: ['browser_'], promptSections: ['tool:bridge-browser'] },
@@ -496,8 +591,8 @@ describe('10-case capability gate state machine (including no-plugin degradation
     expect(guard?.({ agent, name: 'computer_use_click' })).toBeDefined()
   })
 
-  // Case 10: Graceful degradation / no-plugin fallback
-  it('Case 10: graceful degradation when gated plugin is not installed (no matching tool schemas)', async () => {
+  // Case 12: Graceful degradation / no-plugin fallback
+  it('Case 12: graceful degradation when gated plugin is not installed (no matching tool schemas)', async () => {
     const { context, handlers } = createMockContext()
     let restrictCalled = false
     const session = { events: [] }

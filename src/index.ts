@@ -106,6 +106,10 @@ interface GateState {
   /** The capability snapshot this session started with (route-A: immutable per session). */
   capabilities: Record<string, Capability>
   entries: Record<string, GateEntry>
+  /** Whether durable history has been folded into this state. */
+  restored: boolean
+  /** Whether the first-step tool restriction has been installed. */
+  enforced: boolean
 }
 
 const stateBySession = new WeakMap<object, GateState>()
@@ -113,7 +117,7 @@ const stateBySession = new WeakMap<object, GateState>()
 function stateFor(session: object, capabilities: Record<string, Capability>): GateState {
   let state = stateBySession.get(session)
   if (state === undefined) {
-    state = { capabilities, entries: {} }
+    state = { capabilities, entries: {}, restored: false, enforced: false }
     for (const key of Object.keys(capabilities)) state.entries[key] = { unlocked: false, disposer: undefined }
     stateBySession.set(session, state)
   }
@@ -226,23 +230,38 @@ function scanPriorUnlocks(session: { events: ArrayLike<unknown> }, capabilities:
   return [...unlocked]
 }
 
-/** Apply the per-session deny for every still-locked capability group. */
-function gate(session: object, agent: Agent, capabilities: Record<string, Capability>): GateState {
+/** Restore prior user skill invocations into one session's in-memory state. */
+function restoreState(session: { events: ArrayLike<unknown> }, capabilities: Record<string, Capability>): GateState {
   const state = stateFor(session, capabilities)
-  const prior = scanPriorUnlocks(agent.session, capabilities)
-  for (const key of prior) unlock(state, key)
+  if (state.restored) return state
+
+  for (const key of scanPriorUnlocks(session, capabilities)) unlock(state, key)
+  state.restored = true
+  return state
+}
+
+/** Apply the per-session deny for every still-locked capability group once. */
+function enforceGate(agent: Agent, state: GateState): void {
+  if (state.enforced) return
 
   const tools = agent.ctx.tools
   const visible = new Set(tools.schemas(agent).map(tool => tool.name))
 
-  for (const [key, cap] of Object.entries(capabilities)) {
+  for (const [key, cap] of Object.entries(state.capabilities)) {
     const entry = state.entries[key]
-    if (entry === undefined || entry.unlocked) continue
+    if (entry === undefined || entry.unlocked || entry.disposer !== undefined) continue
     const deny = [...visible].filter(toolName => cap.toolPrefixes.some(prefix => toolName.startsWith(prefix)))
     if (deny.length === 0) continue
     entry.disposer = tools.restrict({ deny })
   }
 
+  state.enforced = true
+}
+
+/** Restore durable state, then install the per-session tool restrictions. */
+function gate(session: { events: ArrayLike<unknown> }, agent: Agent, capabilities: Record<string, Capability>): GateState {
+  const state = restoreState(session, capabilities)
+  enforceGate(agent, state)
   return state
 }
 
@@ -280,10 +299,12 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     })
   })
 
-  // The first real pre-step is the session's configuration snapshot boundary.
-  // An empty session can be created before its first user message, so taking
-  // the snapshot at `agent/session-start` could capture settings that were
-  // changed before the user actually began the new conversation.
+  // The first real pre-step remains the session's configuration snapshot and
+  // enforcement boundary. An empty session can be created before its first
+  // user message, so this is intentionally later than `agent/session-start`.
+  // The system-prompt hook may have restored state earlier only to suppress
+  // locked guidance; `gate()` is idempotent and installs the actual tool
+  // restriction here before the model request.
   //
   // Unlock from the trusted user gesture before the first model request. The
   // skill plugin turns `/browser` and `/computer-use` into a skill-invocation
@@ -292,8 +313,7 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
   // the latest settings and removes the first-request race while keeping
   // model-generated tool calls ineligible.
   ctx.on('agent/pre-step', ({ agent, messages }, next) => {
-    const state = stateBySession.get(agent.session)
-      ?? gate(agent.session, agent, readCapabilities(settingsScope(ctx), config))
+    const state = gate(agent.session, agent, readCapabilities(settingsScope(ctx), config))
     unlockForSkillNames(state, userInvokedSkillNames(messages))
     return next()
   })
@@ -326,12 +346,15 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
   })
 
   // Suppress gated capability guidance until the matching group is unlocked.
+  // Agent loop assembles the system prompt before dispatching agent/pre-step, so
+  // restore the session state here as well. This keeps the first request after
+  // creation or resume consistent with the tool guard; pre-step still owns the
+  // actual tools.restrict() call and current-message unlock.
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
-    const assembled = await next()
     const agent = context.agent as Agent | undefined
-    if (agent === undefined) return assembled
-    const state = stateBySession.get(agent.session)
-    if (state === undefined) return assembled
+    if (agent === undefined) return next()
+    const state = restoreState(agent.session, readCapabilities(settingsScope(ctx), config))
+    const assembled = await next()
     let filtered = false
     const sections = assembled.sections.filter(section => {
       for (const [key, cap] of Object.entries(state.capabilities)) {
