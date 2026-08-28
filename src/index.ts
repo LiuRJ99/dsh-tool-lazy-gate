@@ -51,6 +51,16 @@ export const name = 'tool-lazy-gate'
 /** Host services this plugin requires. */
 export const inject = ['tools', 'agents']
 
+/** Host-only service consumed by trusted same-process plugins. */
+export const TOOL_LAZY_GATE_SERVICE = 'toolLazyGate'
+
+export type ToolLazyGateGrantProvenance = 'panel-create' | 'execution' | 'claim'
+
+export interface ToolLazyGateService {
+  /** Grant configured lazy-gate Skills on one live Agent/session. */
+  grant(agent: Agent, skillNames: readonly string[], provenance: ToolLazyGateGrantProvenance): void
+}
+
 /** Durable settings namespace owning the runtime-managed capability list. */
 export const GATE_NAMESPACE = settingsNamespace('tool-lazy-gate')
 
@@ -349,6 +359,8 @@ interface GateState {
 }
 
 const stateBySession = new WeakMap<object, GateState>()
+/** Grants may arrive from a host plugin before the first prompt creates state. */
+const pendingGrantsBySession = new WeakMap<object, Set<string>>()
 
 function stateFor(session: object, capabilities: Record<string, Capability>): GateState {
   let state = stateBySession.get(session)
@@ -356,6 +368,11 @@ function stateFor(session: object, capabilities: Record<string, Capability>): Ga
     state = { capabilities, entries: {}, restored: false, enforced: false }
     for (const key of Object.keys(capabilities)) state.entries[key] = { unlocked: false, disposer: undefined }
     stateBySession.set(session, state)
+    const pending = pendingGrantsBySession.get(session)
+    if (pending !== undefined) {
+      unlockForSkillNames(state, [...pending])
+      pendingGrantsBySession.delete(session)
+    }
   }
   return state
 }
@@ -454,6 +471,33 @@ function unlockForSkillNames(state: GateState, skillNames: readonly string[]): v
   }
 }
 
+const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+const GRANT_PROVENANCES = new Set<ToolLazyGateGrantProvenance>(['panel-create', 'execution', 'claim'])
+
+/**
+ * Grant configured Skills from trusted host code. This is intentionally not a
+ * user-message/event path: it updates only the live Agent's in-memory state,
+ * and unknown Skills are ignored because they have no configured association.
+ */
+function grantForAgent(agent: Agent, skillNames: readonly string[], provenance: ToolLazyGateGrantProvenance): void {
+  if (!GRANT_PROVENANCES.has(provenance)) throw new Error(`invalid lazy-gate grant provenance: ${String(provenance)}`)
+  if (!Array.isArray(skillNames)) throw new Error('lazy-gate skillNames must be an array')
+  const names = [...new Set(skillNames.map(name => {
+    if (typeof name !== 'string' || !SKILL_NAME_RE.test(name)) throw new Error(`invalid lazy-gate skill name: ${String(name)}`)
+    return name
+  }))]
+  if (names.length === 0) return
+  const session = agent.session as object
+  const state = stateBySession.get(session)
+  if (state !== undefined) {
+    unlockForSkillNames(state, names)
+    return
+  }
+  const pending = pendingGrantsBySession.get(session) ?? new Set<string>()
+  for (const name of names) pending.add(name)
+  pendingGrantsBySession.set(session, pending)
+}
+
 /** Reconstruct prior unlocks from the durable log: USER skill invocations only. */
 function scanPriorUnlocks(session: { events: ArrayLike<unknown> }, capabilities: Record<string, Capability>): string[] {
   const unlocked = new Set<string>()
@@ -530,6 +574,14 @@ function settingsScope(ctx: Context): { get(ns: ReturnType<typeof settingsNamesp
 }
 
 export function apply(ctx: Context, config: Config = {} as Config): void {
+  // Host plugins use this service to authorize a live agent without fabricating
+  // a slash command or durable skill-invocation event. Its only state is the
+  // target session's weak in-memory gate state.
+  const reflector = (ctx as unknown as { reflect?: { provide(name: string, value: unknown): unknown } }).reflect
+  reflector?.provide(TOOL_LAZY_GATE_SERVICE, {
+    grant: grantForAgent,
+  } satisfies ToolLazyGateService)
+
   // Resolve skill associations once per catalog generation. The result is shared
   // by the first system-prompt assembly, the pre-step snapshot, and the settings
   // discovery RPC so all three surfaces agree on what a skill unlocks.
@@ -632,14 +684,41 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
   ctx.inject(['connection'], (scope) => {
     const connection = scope.get('connection') as { rpc?: { handle?: (path: string, handler: (endpoint: string, payload: unknown) => Promise<unknown>, opts?: unknown) => void } } | undefined
     if (connection?.rpc?.handle === undefined) return
+    const agents = scope.get('agents') as { get(id: string): Agent | undefined } | undefined
 
-    connection.rpc.handle('/tool-lazy-gate', async (endpoint: string) => {
+    connection.rpc.handle('/tool-lazy-gate', async (endpoint: string, payload: unknown) => {
       try {
+        if (endpoint === 'grant-taskboard') {
+          // This endpoint is intentionally narrower than the host service:
+          // loopback GUI code may grant only taskboard to a validated live
+          // session. Browser/computer grants remain host-side task execution
+          // decisions and are never client-controlled.
+          const sessionId = typeof payload === 'object' && payload !== null
+            ? (payload as { sessionId?: unknown }).sessionId
+            : undefined
+          if (typeof sessionId !== 'string' || !/^[A-Za-z0-9._:-]{1,200}$/.test(sessionId)) {
+            return { ok: false, error: { code: 'bad-request', message: 'sessionId is invalid', details: {} } }
+          }
+          const agent = agents?.get(sessionId)
+          if (agent === undefined) {
+            return { ok: false, error: { code: 'not-found', message: 'live session not found', details: {} } }
+          }
+          grantForAgent(agent, ['taskboard'], 'panel-create')
+          return { ok: true, value: { sessionId, granted: ['taskboard'] } }
+        }
         if (endpoint !== 'discover') {
           return { ok: false, error: { code: 'bad-request', message: `Unknown tool-lazy-gate RPC endpoint: ${endpoint}`, details: {} } }
         }
 
         const catalog = await associationCatalog()
+        // The GUI should discover only capabilities that are both registered
+        // and enabled in lazy-gate settings. Metadata alone is not permission
+        // to surface or authorize a task capability.
+        const activeSkillNames = new Set(
+          Object.values(readCapabilities(settingsScope(ctx), config, catalog.associations))
+            .flatMap(capability => capability.skillNames),
+        )
+        const activeSkills = catalog.skills.filter(skill => activeSkillNames.has(skill.name))
         const toolNames = liveToolNames(ctx)
         const toolGroups = catalog.skills
           .flatMap(skill => skill.toolPrefixes)
@@ -657,10 +736,13 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
         return {
           ok: true,
           value: {
-            // Each entry carries its own resources. The client can therefore
-            // derive both fields from the selected Skill Names.
+            // `skills` remains the complete adapted catalog for the lazy-gate
+            // settings page, which needs to configure a newly registered row.
             skills: catalog.skills,
-            // Keep these aggregate fields for older clients; they are already
+            // Taskboard and other consumers use this explicit active-only view:
+            // registered + resource-backed + enabled in the current gate config.
+            enabledSkills: activeSkills,
+            // Keep these aggregate fields for older settings clients; they are
             // restricted to resources declared by adapted skills.
             toolGroups,
             sections,

@@ -35,11 +35,19 @@
  * @module dsh-tool-lazy-gate
  */
 import type { Context } from '@deepseek-ai/cordis';
+import type { Agent } from '@deepseek-ai/dsh-agent';
 import z from '@deepseek-ai/schemastery';
 /** Cordis plugin name used by loader diagnostics. */
 export declare const name = "tool-lazy-gate";
 /** Host services this plugin requires. */
 export declare const inject: string[];
+/** Host-only service consumed by trusted same-process plugins. */
+export declare const TOOL_LAZY_GATE_SERVICE = "toolLazyGate";
+export type ToolLazyGateGrantProvenance = 'panel-create' | 'execution' | 'claim';
+export interface ToolLazyGateService {
+    /** Grant configured lazy-gate Skills on one live Agent/session. */
+    grant(agent: Agent, skillNames: readonly string[], provenance: ToolLazyGateGrantProvenance): void;
+}
 /** Durable settings namespace owning the runtime-managed capability list. */
 export declare const GATE_NAMESPACE: import("@deepseek-ai/dsh-settings").SettingsNamespace;
 /** One gated capability family, fully data-driven. */

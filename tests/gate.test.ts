@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   apply,
   capabilitiesFromSkillAssociations,
+  TOOL_LAZY_GATE_SERVICE,
   capabilityForSkill,
   capabilityForTool,
   enabledCapabilities,
@@ -210,8 +211,90 @@ describe('discovery exposes only adapted skill resources', () => {
       toolPrefixes: ['browser_'],
       promptSections: ['tool:bridge-browser'],
     }])
+    expect(result?.value.enabledSkills).toEqual(result?.value.skills)
     expect(result?.value.toolGroups.map((group: any) => group.prefix)).toEqual(['browser_'])
     expect(result?.value.sections).toEqual(['tool:bridge-browser'])
+  })
+
+  it('filters discovery by enabled capability configuration', async () => {
+    let discoverHandler: ((endpoint: string, payload: unknown) => Promise<any>) | undefined
+    const connection = {
+      rpc: {
+        handle: (_path: string, handler: (endpoint: string, payload: unknown) => Promise<any>) => {
+          discoverHandler = handler
+        },
+      },
+    }
+    const context = {
+      get: (name: string) => name === 'skills'
+        ? {
+            list: async () => [{ name: 'foo', invocation: { userInvocable: true }, metadata: { 'dsh:gate': { toolPrefixes: ['foo_'], promptSections: ['tool:foo'] } } }],
+            get: async () => ({ name: 'foo', metadata: { 'dsh:gate': { toolPrefixes: ['foo_'], promptSections: ['tool:foo'] } } }),
+          }
+        : name === 'systemPrompt'
+          ? { assemble: async () => ({ sections: [{ name: 'tool:foo' }] }) }
+          : undefined,
+      inject: (deps: string[], callback: (scope: any) => void) => {
+        if (deps.includes('connection')) callback({ get: (name: string) => name === 'connection' ? connection : undefined })
+        else callback({ settings: { register: () => undefined } })
+      },
+      on: () => undefined,
+      tools: { guard: () => undefined, schemas: () => [{ name: 'foo_run' }] },
+    }
+
+    apply(context as never, {
+      capabilities: {
+        foo: { enabled: false, skillNames: ['foo'], toolPrefixes: [], promptSections: [] },
+      },
+    })
+    const hidden = await discoverHandler?.('discover', {})
+    expect(hidden?.value.skills).toHaveLength(1)
+    expect(hidden?.value.enabledSkills).toEqual([])
+
+    apply(context as never, {
+      capabilities: {
+        foo: { enabled: true, skillNames: ['foo'], toolPrefixes: [], promptSections: [] },
+      },
+    })
+    const visible = await discoverHandler?.('discover', {})
+    expect(visible?.value.enabledSkills).toEqual([{
+      name: 'foo', toolPrefixes: ['foo_'], promptSections: ['tool:foo'],
+    }])
+  })
+})
+
+describe('loopback panel grant', () => {
+  it('requires a live session and can never grant browser/computer from client payload', async () => {
+    let handler: ((endpoint: string, payload: unknown) => Promise<any>) | undefined
+    const agent = { session: { events: [] }, ctx: { tools: { schemas: () => [], restrict: () => () => undefined } } }
+    const connection = {
+      rpc: {
+        handle: (_path: string, callback: (endpoint: string, payload: unknown) => Promise<any>) => {
+          handler = callback
+        },
+      },
+    }
+    const context = {
+      get: () => undefined,
+      inject: (deps: string[], callback: (scope: any) => void) => {
+        if (deps.includes('connection')) {
+          callback({ get: (name: string) => name === 'connection' ? connection : name === 'agents' ? { get: (id: string) => id === 'live' ? agent : undefined } : undefined })
+        } else {
+          callback({ settings: { register: () => undefined } })
+        }
+      },
+      on: () => undefined,
+      tools: { guard: () => undefined, schemas: () => [] },
+    }
+
+    apply(context as never, { capabilities: CAPS })
+    expect(handler).toBeDefined()
+    expect((await handler?.('grant-taskboard', { sessionId: 'missing', skillNames: ['browser'] }))?.error.code).toBe('not-found')
+    expect((await handler?.('grant-taskboard', { sessionId: '../live' }))?.error.code).toBe('bad-request')
+    expect(await handler?.('grant-taskboard', { sessionId: 'live', skillNames: ['browser', 'computer-use'] })).toMatchObject({
+      ok: true,
+      value: { sessionId: 'live', granted: ['taskboard'] },
+    })
   })
 })
 
@@ -701,6 +784,46 @@ describe('capability gate state machine (including first-assembly and no-plugin 
     const guard = getGuard()
     expect(guard?.({ agent, name: 'browser_snapshot' })).toBeUndefined()
     expect(guard?.({ agent, name: 'computer_use_click' })).toBeDefined()
+  })
+
+  it('host grant unlocks a live agent, including a grant issued before gate initialization', async () => {
+    const { context, handlers, getGuard } = createMockContext()
+    let service: any
+    ;(context as any).reflect = {
+      provide: (name: string, value: unknown) => {
+        if (name === TOOL_LAZY_GATE_SERVICE) service = value
+      },
+    }
+    const deniedTools: string[][] = []
+    const session = { events: [] }
+    const agent = {
+      session,
+      ctx: {
+        tools: {
+          schemas: () => [{ name: 'browser_snapshot' }, { name: 'computer_use_click' }],
+          restrict: ({ deny }: { deny: string[] }) => {
+            deniedTools.push(deny)
+            return () => undefined
+          },
+        },
+      },
+    }
+
+    apply(context as never, { capabilities: CAPS })
+    expect(service).toBeDefined()
+    service.grant(agent, ['browser'], 'execution')
+    const preStep = handlers.get('agent/pre-step')?.[0]
+    await preStep?.({
+      agent,
+      messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: 'plain message' }] }],
+      turn: 1,
+      step: 1,
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'enter', messages: [] }))
+
+    expect(deniedTools).toEqual([['computer_use_click']])
+    expect(getGuard()?.({ agent, name: 'browser_snapshot' })).toBeUndefined()
+    expect(getGuard()?.({ agent, name: 'computer_use_click' })).toContain('/computer-use')
   })
 
   // Case 12: Graceful degradation / no-plugin fallback
