@@ -26,14 +26,13 @@ window.__ModuleLoader__.load({
         enabled: '已启用',
         disabled: '已停用',
         skillNamesLabel: '解锁技能 (Skill Names)',
-        skillNamesHint: '用户在当前会话显式输入（如 /browser 或 /computer-use）时，触发解锁对应能力。',
-        skillNamesPlaceholder: '点击选择解锁技能…',
+        skillNamesHint: '仅显示已声明 Lazy Gate 关联的用户技能；用户在当前会话显式输入（如 /browser 或 /computer-use）时触发解锁。',
+        skillNamesPlaceholder: '点击选择已适配的解锁技能…',
         toolPrefixesLabel: '门控工具前缀 (Tool Prefixes)',
-        toolPrefixesHint: '以此前缀开头的全局工具在未解锁时将被隐藏并不允许执行。',
-        toolPrefixesPlaceholder: '点击选择门控工具前缀组…',
+        toolPrefixesHint: '根据所选解锁技能自动关联；未适配技能或其他插件的工具不会出现在这里。',
         promptSectionsLabel: '压制 Prompt 段 (Prompt Sections)',
-        promptSectionsHint: '能力锁定时同步过滤系统提示词段，避免向模型暴露未解锁工具的引导信息。',
-        promptSectionsPlaceholder: '点击选择要压制的系统提示词段…',
+        promptSectionsHint: '根据所选解锁技能自动关联，仅过滤该技能插件声明的系统提示词段。',
+        derivedEmpty: '所选技能暂无已适配的 Tool / Prompt 关联。',
         nameLabel: '能力标识符 (Key)',
         nameHint: '唯一小写英文标识符（例如 browser / computer / deploy）。',
         save: '保存更改',
@@ -43,9 +42,9 @@ window.__ModuleLoader__.load({
         empty: '暂无门控规则，所有高权限工具将保持默认可见状态。',
         loading: '正在读取门控配置…',
         unavailable: '当前环境无法访问设置存储。',
-        discovering: '正在从宿主发现可用技能与工具前缀…',
-        discoverFailed: '候选资源发现未就绪（支持直接文本输入）。',
-        noOptionsFound: '未发现候选项，支持手动输入',
+        discovering: '正在从宿主发现已适配技能及其 Tool / Prompt 关联…',
+        discoverFailed: '已适配关联发现未就绪，仅显示内置关联。',
+        noOptionsFound: '暂无已适配关联',
       },
       en: {
         tab: 'Lazy Gate',
@@ -57,14 +56,13 @@ window.__ModuleLoader__.load({
         enabled: 'Enabled',
         disabled: 'Disabled',
         skillNamesLabel: 'Unlock Skills',
-        skillNamesHint: 'Invoking one of these skills (e.g. /browser) explicitly will unlock this capability.',
-        skillNamesPlaceholder: 'Select unlock skills…',
+        skillNamesHint: 'Only skills with a declared Lazy Gate association are shown; explicitly invoking one (e.g. /browser) unlocks this capability.',
+        skillNamesPlaceholder: 'Select an adapted unlock skill…',
         toolPrefixesLabel: 'Tool Prefixes',
-        toolPrefixesHint: 'Global tools starting with these prefixes will be hidden and rejected while locked.',
-        toolPrefixesPlaceholder: 'Select tool prefix groups…',
+        toolPrefixesHint: 'Derived automatically from the selected unlock skills; unrelated plugin tools are not available here.',
         promptSectionsLabel: 'Suppressed Prompt Sections',
-        promptSectionsHint: 'System prompt sections to suppress while locked to prevent accidental model induction.',
-        promptSectionsPlaceholder: 'Select prompt sections to suppress…',
+        promptSectionsHint: 'Derived automatically from the selected unlock skills; only sections declared by that plugin are suppressed.',
+        derivedEmpty: 'The selected skills have no adapted Tool / Prompt association.',
         nameLabel: 'Capability Key',
         nameHint: 'Unique lowercase identifier (e.g. browser / computer / deploy).',
         save: 'Save Changes',
@@ -74,9 +72,9 @@ window.__ModuleLoader__.load({
         empty: 'No capability gates configured. Tools remain visible by default.',
         loading: 'Loading gate settings…',
         unavailable: 'Settings storage is unavailable.',
-        discovering: 'Discovering available skills and tool prefixes from host…',
-        discoverFailed: 'Candidate discovery unavailable (manual text entry is supported).',
-        noOptionsFound: 'No options found, manual entry supported',
+        discovering: 'Discovering adapted skills and their Tool / Prompt associations from host…',
+        discoverFailed: 'Adapted association discovery is unavailable; showing built-in associations only.',
+        noOptionsFound: 'No adapted association found',
       },
     }
 
@@ -333,6 +331,38 @@ window.__ModuleLoader__.load({
         fontSize: '12px',
         fontStyle: 'italic',
       },
+      derivedList: {
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: '6px',
+        minHeight: '38px',
+        boxSizing: 'border-box',
+        padding: '8px 10px',
+        border: '1px solid var(--dsw-alias-border-primary, rgba(31, 35, 41, 0.10))',
+        borderRadius: '10px',
+        background: 'var(--dsw-alias-bg-layer-1, rgba(31, 35, 41, 0.025))',
+      },
+      derivedValue: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        maxWidth: '100%',
+        boxSizing: 'border-box',
+        padding: '3px 7px',
+        borderRadius: '6px',
+        background: 'var(--dsw-specific-sidebar-nav-item-active, rgba(37, 99, 235, 0.08))',
+        color: 'var(--dsw-alias-label-primary, #1f2329)',
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        fontSize: '12px',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      },
+      derivedEmpty: {
+        alignSelf: 'center',
+        color: 'var(--dsw-alias-label-secondary, #717782)',
+        fontSize: '12px',
+        fontStyle: 'italic',
+      },
       addBtn: {
         boxSizing: 'border-box',
         cursor: 'pointer',
@@ -447,11 +477,6 @@ window.__ModuleLoader__.load({
     }
 
     // ── helpers ──
-    function splitList(value) {
-      if (value === undefined || value === null) return []
-      if (Array.isArray(value)) return value
-      return String(value).split(',').map((item) => item.trim()).filter(Boolean)
-    }
     function joinList(list) {
       return (list || []).join(', ')
     }
@@ -471,13 +496,9 @@ window.__ModuleLoader__.load({
       }, [open])
 
       if (!options || options.length === 0) {
-        return React.createElement('input', {
-          type: 'text',
-          value: joinList(value),
-          style: styles.input,
-          placeholder: placeholder || '',
-          onChange: (event) => onChange(splitList(event.currentTarget.value)),
-        })
+        return React.createElement('div', { style: styles.derivedList },
+          React.createElement('span', { style: styles.derivedEmpty }, emptyText || '暂无已适配关联'),
+        )
       }
 
       const list = value || []
@@ -542,6 +563,83 @@ window.__ModuleLoader__.load({
       )
     }
 
+    function DerivedValues({ values, emptyText }) {
+      const list = Array.isArray(values) ? values : []
+      return React.createElement('div', { style: styles.derivedList },
+        list.length > 0
+          ? list.map((value) => React.createElement('span', { key: value, style: styles.derivedValue }, value))
+          : React.createElement('span', { style: styles.derivedEmpty }, emptyText || '暂无已适配关联'),
+      )
+    }
+
+    // These two mappings keep the settings page useful while an older adapted
+    // plugin has not yet published metadata['dsh:gate']. The host still filters
+    // them against the tools/sections that are actually registered.
+    const BUILTIN_SKILL_ASSOCIATIONS = {
+      browser: { toolPrefixes: ['browser_'], promptSections: ['tool:bridge-browser'] },
+      'computer-use': { toolPrefixes: ['computer_use_'], promptSections: ['tool:computer', 'tool:computer-policy'] },
+    }
+
+    function builtinSkillList() {
+      return Object.entries(BUILTIN_SKILL_ASSOCIATIONS).map(([name, value]) => ({
+        name,
+        toolPrefixes: [...value.toolPrefixes],
+        promptSections: [...value.promptSections],
+      }))
+    }
+
+    function associationMap(skills, includeBuiltins) {
+      const map = new Map()
+      if (includeBuiltins) {
+        for (const [name, value] of Object.entries(BUILTIN_SKILL_ASSOCIATIONS)) {
+          map.set(name, {
+            toolPrefixes: [...value.toolPrefixes],
+            promptSections: [...value.promptSections],
+          })
+        }
+      }
+      for (const skill of Array.isArray(skills) ? skills : []) {
+        if (!skill || typeof skill.name !== 'string') continue
+        const toolPrefixes = Array.isArray(skill.toolPrefixes) ? skill.toolPrefixes.filter((value) => typeof value === 'string' && value.length > 0) : []
+        const promptSections = Array.isArray(skill.promptSections) ? skill.promptSections.filter((value) => typeof value === 'string' && value.length > 0) : []
+        if (toolPrefixes.length === 0 && promptSections.length === 0) continue
+        map.set(skill.name, { toolPrefixes, promptSections })
+      }
+      return map
+    }
+
+    function derivedResources(skillNames, associations) {
+      const toolPrefixes = []
+      const promptSections = []
+      const seenPrefixes = new Set()
+      const seenSections = new Set()
+      for (const name of Array.isArray(skillNames) ? skillNames : []) {
+        const linked = associations.get(name)
+        if (!linked) continue
+        for (const value of linked.toolPrefixes) {
+          if (!seenPrefixes.has(value)) {
+            seenPrefixes.add(value)
+            toolPrefixes.push(value)
+          }
+        }
+        for (const value of linked.promptSections) {
+          if (!seenSections.has(value)) {
+            seenSections.add(value)
+            promptSections.push(value)
+          }
+        }
+      }
+      return { toolPrefixes, promptSections }
+    }
+
+    function normalizedCapability(cap, associations, filterUnknown) {
+      const raw = cap || { enabled: true, skillNames: [], toolPrefixes: [], promptSections: [] }
+      const sourceNames = Array.isArray(raw.skillNames) ? raw.skillNames.filter((value) => typeof value === 'string' && value.length > 0) : []
+      const skillNames = filterUnknown ? sourceNames.filter((name) => associations.has(name)) : sourceNames
+      const resources = derivedResources(skillNames, associations)
+      return { ...raw, skillNames, ...resources }
+    }
+
     // ── Main Settings View ──
     function CapabilitiesView({ ctx, settingsScope }) {
       const isZh = (ctx.locale?.current || 'zh').startsWith('zh')
@@ -558,15 +656,20 @@ window.__ModuleLoader__.load({
       const [expandedKeys, setExpandedKeys] = useState(() => ({}))
       const [isSaving, setIsSaving] = useState(false)
       const [saveNotice, setSaveNotice] = useState(null)
-      const [discovery, setDiscovery] = useState({ state: 'loading', skills: [], toolGroups: [], sections: [] })
+      const [discovery, setDiscovery] = useState(() => ({
+        state: 'loading',
+        skills: builtinSkillList(),
+        toolGroups: [],
+        sections: [],
+      }))
 
       const connection = ctx.connection || ctx.get?.('connection')
 
-      // Auto-discover candidates from host
+      // Auto-discover only adapted skill associations from the host.
       useEffect(() => {
         let cancelled = false
         if (!connection?.rpc?.call) {
-          setDiscovery({ state: 'failed', skills: [], toolGroups: [], sections: [] })
+          setDiscovery({ state: 'failed', skills: builtinSkillList(), toolGroups: [], sections: [] })
           return
         }
         connection.rpc.call('/tool-lazy-gate', 'discover', {}).then((raw) => {
@@ -574,18 +677,21 @@ window.__ModuleLoader__.load({
           if (raw && raw.ok && raw.value) {
             setDiscovery({
               state: 'ready',
-              skills: raw.value.skills || [],
-              toolGroups: raw.value.toolGroups || [],
-              sections: raw.value.sections || [],
+              skills: Array.isArray(raw.value.skills) ? raw.value.skills : [],
+              toolGroups: Array.isArray(raw.value.toolGroups) ? raw.value.toolGroups : [],
+              sections: Array.isArray(raw.value.sections) ? raw.value.sections : [],
             })
           } else {
-            setDiscovery({ state: 'failed', skills: [], toolGroups: [], sections: [] })
+            setDiscovery({ state: 'failed', skills: builtinSkillList(), toolGroups: [], sections: [] })
           }
         }).catch(() => {
-          if (!cancelled) setDiscovery({ state: 'failed', skills: [], toolGroups: [], sections: [] })
+          if (!cancelled) setDiscovery({ state: 'failed', skills: builtinSkillList(), toolGroups: [], sections: [] })
         })
         return () => { cancelled = true }
       }, [connection])
+
+      const adaptedAssociations = associationMap(discovery.skills, discovery.state !== 'ready')
+      const filterUnknownSkills = discovery.state === 'ready'
 
       // Re-sync when durable value updates
       useEffect(() => {
@@ -601,7 +707,8 @@ window.__ModuleLoader__.load({
       const patchCap = (key, patch) => {
         setCaps((prev) => {
           const next = { ...prev }
-          next[key] = { ...(next[key] || { enabled: true, skillNames: [], toolPrefixes: [], promptSections: [] }), ...patch }
+          const merged = { ...(next[key] || { enabled: true, skillNames: [], toolPrefixes: [], promptSections: [] }), ...patch }
+          next[key] = normalizedCapability(merged, adaptedAssociations, filterUnknownSkills)
           return next
         })
       }
@@ -655,7 +762,11 @@ window.__ModuleLoader__.load({
         setIsSaving(true)
         setSaveNotice(null)
         try {
-          await settingsScope.set('capabilities', caps)
+          const normalizedCaps = {}
+          for (const [key, cap] of Object.entries(caps)) {
+            normalizedCaps[key] = normalizedCapability(cap, adaptedAssociations, filterUnknownSkills)
+          }
+          await settingsScope.set('capabilities', normalizedCaps)
           setSaveNotice({ type: 'success', text: t.saved })
           setTimeout(() => setSaveNotice(null), 3500)
         } catch (error) {
@@ -679,12 +790,7 @@ window.__ModuleLoader__.load({
       const enabledCount = keys.filter((k) => caps[k]?.enabled !== false).length
 
       const skills = discovery.skills || []
-      const toolGroups = discovery.toolGroups || []
-      const sections = discovery.sections || []
-
       const skillOptions = skills.map((s) => ({ value: s.name, label: s.name }))
-      const toolGroupOptions = toolGroups.map((g) => ({ value: g.prefix, label: `${g.prefix} (${g.count} 个工具)` }))
-      const sectionOptions = sections.map((s) => ({ value: s, label: s }))
 
       return React.createElement('div', {
         style: styles.section,
@@ -714,7 +820,7 @@ window.__ModuleLoader__.load({
             ? React.createElement('p', { style: styles.notice }, t.empty)
             : React.createElement('div', { style: styles.cardList },
                 keys.map((key) => {
-                  const cap = caps[key] || { enabled: true, skillNames: [], toolPrefixes: [], promptSections: [] }
+                  const cap = normalizedCapability(caps[key], adaptedAssociations, filterUnknownSkills)
                   const isCapEnabled = cap.enabled !== false
                   const isExpanded = Boolean(expandedKeys[key])
                   const badges = [
@@ -816,28 +922,22 @@ window.__ModuleLoader__.load({
                           onChange: (next) => patchCap(key, { skillNames: next }),
                         }),
                       ),
-                      // Tool Prefixes Combobox
+                      // Tool Prefixes — derived from the selected skills.
                       React.createElement('div', { style: styles.field },
                         React.createElement('span', { style: styles.label }, t.toolPrefixesLabel),
                         React.createElement('p', { style: styles.hint }, t.toolPrefixesHint),
-                        React.createElement(MultiSelect, {
-                          value: cap.toolPrefixes || [],
-                          options: toolGroupOptions,
-                          placeholder: t.toolPrefixesPlaceholder,
-                          emptyText: t.noOptionsFound,
-                          onChange: (next) => patchCap(key, { toolPrefixes: next }),
+                        React.createElement(DerivedValues, {
+                          values: cap.toolPrefixes || [],
+                          emptyText: t.derivedEmpty,
                         }),
                       ),
-                      // Suppressed Prompt Sections Combobox
+                      // Suppressed Prompt Sections — derived from the selected skills.
                       React.createElement('div', { style: styles.field },
                         React.createElement('span', { style: styles.label }, t.promptSectionsLabel),
                         React.createElement('p', { style: styles.hint }, t.promptSectionsHint),
-                        React.createElement(MultiSelect, {
-                          value: cap.promptSections || [],
-                          options: sectionOptions,
-                          placeholder: t.promptSectionsPlaceholder,
-                          emptyText: t.noOptionsFound,
-                          onChange: (next) => patchCap(key, { promptSections: next }),
+                        React.createElement(DerivedValues, {
+                          values: cap.promptSections || [],
+                          emptyText: t.derivedEmpty,
                         }),
                       ),
                     ),
@@ -871,9 +971,9 @@ window.__ModuleLoader__.load({
               type: 'submit',
               style: {
                 ...styles.saveBtn,
-                ...(isSaving ? styles.btnDisabled : {}),
+                ...(isSaving || discovery.state === 'loading' ? styles.btnDisabled : {}),
               },
-              disabled: isSaving,
+              disabled: isSaving || discovery.state === 'loading',
             },
               isSaving && React.createElement('span', {
                 style: {

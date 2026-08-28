@@ -28,8 +28,9 @@
  *   `user/message` log (only `skill-invocation` entries), never from model
  *   `tool/call` history. A new session starts locked again.
  *
- * Configuration is capability-driven: tool prefixes, skill names, and prompt
- * sections are data, not code (see `cordis.patch.yml`).
+ * Configuration is skill-driven: `skillNames` selects the capability, while
+ * adapted plugins publish their Tool/Prompt association as skill metadata. The
+ * shipped patch supplies browser/computer compatibility defaults.
  *
  * @module dsh-tool-lazy-gate
  */
@@ -47,15 +48,48 @@ export interface Capability {
     enabled: boolean;
     /** Skill names whose USER invocation unlocks this capability (e.g. `/browser`). */
     skillNames: string[];
-    /** Tool-name prefixes this capability gates (e.g. `browser_`). */
+    /**
+     * Tool-name prefixes this capability gates. These values are derived from the
+     * selected `skillNames`; they remain in the config for backwards-compatible
+     * persistence and direct YAML seeds.
+     */
     toolPrefixes: string[];
-    /** System-prompt section names to suppress while locked. */
+    /**
+     * System-prompt section names to suppress while locked. These values are
+     * derived from the selected `skillNames` for the same reason as prefixes.
+     */
     promptSections: string[];
+}
+/** Metadata key used by an adapted skill to publish its gateable resources. */
+export declare const GATE_METADATA_KEY = "dsh:gate";
+/** Tool and prompt resources associated with one user-invocable skill. */
+export interface SkillGateAssociation {
+    toolPrefixes: string[];
+    promptSections: string[];
+}
+/** A skill plus the resources an adapted plugin explicitly associates with it. */
+export interface DiscoveredSkillGateAssociation extends SkillGateAssociation {
+    name: string;
 }
 export interface Config {
     capabilities: Record<string, Capability>;
 }
 export declare const Config: z<Config>;
+/**
+ * Read the opt-in association published by an adapted skill plugin.
+ *
+ * The namespace deliberately lives under the skill's generic metadata object so
+ * an adapted plugin does not need to depend on this package. Unannotated skills
+ * are not gate candidates, which prevents unrelated tools or prompt sections
+ * from leaking into the configuration UI.
+ */
+export declare function skillGateAssociation(skill: unknown): SkillGateAssociation | undefined;
+/**
+ * Apply the skill association map to a capability config. `skillNames` is the
+ * only authoritative selector; stale or hand-added prefixes/sections are
+ * discarded rather than silently gating an unrelated plugin.
+ */
+export declare function capabilitiesFromSkillAssociations(capabilities: Record<string, Capability>, associations?: Record<string, SkillGateAssociation>): Record<string, Capability>;
 /** Drop capabilities whose `enabled` flag is off before they reach any gate logic. */
 export declare function enabledCapabilities(capabilities: Record<string, Capability>): Record<string, Capability>;
 /** The capability key whose `skillNames` contain `skillName`, or undefined. */

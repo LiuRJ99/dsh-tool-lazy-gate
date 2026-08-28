@@ -39,10 +39,15 @@ dsh plugin --profile web add <path>/dsh-tool-lazy-gate
 
 ## Configuration
 
-Capabilities are data-driven. The seed list lives in `cordis.patch.yml` and is
-also registered as a **durable settings namespace** (`tool-lazy-gate`), so a
-configuration page renders it and edits persist to the user settings document.
-Each capability carries an `enabled` switch.
+The seed list lives in `cordis.patch.yml` and is also registered as a
+**durable settings namespace** (`tool-lazy-gate`), so the configuration page
+renders it and edits persist to the user settings document. `skillNames` is the
+only user-facing selector: `toolPrefixes` and `promptSections` are derived from
+the selected skill's adapted-plugin association and are not independent UI
+inputs.
+
+The shipped browser/computer rows are kept as a compatibility fallback for
+older adapted plugin versions, so the seed only needs to name the skills:
 
 ```yaml
 - insert:
@@ -53,14 +58,38 @@ Each capability carries an `enabled` switch.
           browser:
             enabled: true
             skillNames: [browser]
-            toolPrefixes: [browser_]
-            promptSections: [tool:bridge-browser]
           computer:
             enabled: true
             skillNames: [computer-use]
-            toolPrefixes: [computer_use_]
-            promptSections: [tool:computer, tool:computer-policy]
+          taskboard:
+            enabled: true
+            skillNames: [taskboard]
 ```
+
+An adapted plugin publishes its association on the skill registration under the
+namespaced `dsh:gate` metadata key:
+
+```ts
+ctx.skills.register({
+  name: 'deploy',
+  description: 'Unlock the deploy tools for this session.',
+  content: '# Deploy',
+  source: '@example/dsh-deploy',
+  invocation: { modelInvocable: false, userInvocable: true },
+  metadata: {
+    'dsh:gate': {
+      toolPrefixes: ['deploy_'],
+      promptSections: ['tool:deploy'],
+    },
+  },
+})
+```
+
+The settings page only lists user-invocable skills with this association (plus
+legacy browser/computer compatibility rows). Selecting a skill automatically
+unions its declared Tool Prefixes and Prompt Sections. Old saved values that do
+not come from a selected adapted skill are ignored by the runtime and removed
+when the settings are saved.
 
 ### When configuration takes effect
 
@@ -83,20 +112,20 @@ authorization skill. **Hard prerequisites** before an entry can gate anything:
    `invocation: { modelInvocable: false, userInvocable: true }`. The gate only
    unlocks on the user's `/skill` gesture; the skill body itself is the plugin's
    job (see `bridge-browser`'s `BROWSER_SKILL` as the reference).
-3. **Prompt-section names are known** — any guidance section that advertises the
-   gated tools (e.g. `tool:bridge-browser`) must be listed in `promptSections`
-   so it is suppressed while locked. Omitting it leaves residual prompt
-   guidance, not a security hole.
+3. **The skill publishes `metadata['dsh:gate']`** with its associated
+   `toolPrefixes` and `promptSections`. This is the association source used by
+   the UI and runtime; it prevents an unrelated plugin's resources from being
+   selected accidentally.
 
-With those three met, adding a capability is configuration only:
+The capability config then names only the adapted skill:
 
 ```yaml
 capabilities:
   deploy:
     enabled: true
     skillNames: [deploy]
-    toolPrefixes: [deploy_]
-    promptSections: [tool:deploy]
 ```
 
-No `dsh-tool-lazy-gate` source change is required.
+After the plugin publishes the association, no `dsh-tool-lazy-gate` source
+change is required. The settings page will discover the skill and derive both
+resource lists automatically.

@@ -28,7 +28,11 @@ dsh plugin --profile web add <path>/dsh-tool-lazy-gate
 
 ## 配置说明
 
-能力采用数据驱动配置，预置在 `cordis.patch.yml` 中，并注册为持久化配置命名空间（`tool-lazy-gate`）。
+能力配置已改为以 `skillNames` 为唯一入口。`toolPrefixes`（门控工具前缀）和
+`promptSections`（压制 Prompt 段）不再是独立候选项，而是由所选的、已经适配
+Lazy Gate 的 Skill 自动关联得到。这样，其他插件的 Tool/Prompt 不会混入门禁配置。
+
+预置配置只需要声明浏览器和电脑技能：
 
 ```yaml
 - insert:
@@ -39,13 +43,34 @@ dsh plugin --profile web add <path>/dsh-tool-lazy-gate
           browser:
             enabled: true
             skillNames: [browser]
-            toolPrefixes: [browser_]
-            promptSections: [tool:bridge-browser]
           computer:
             enabled: true
             skillNames: [computer-use]
-            toolPrefixes: [computer_use_]
-            promptSections: [tool:computer, tool:computer-policy]
+          taskboard:
+            enabled: true
+            skillNames: [taskboard]
 ```
+
+已适配插件需要在注册授权 Skill 时发布关联元数据：
+
+```ts
+ctx.skills.register({
+  name: 'deploy',
+  description: '解锁本会话的 deploy 工具。',
+  content: '# Deploy',
+  source: '@example/dsh-deploy',
+  invocation: { modelInvocable: false, userInvocable: true },
+  metadata: {
+    'dsh:gate': {
+      toolPrefixes: ['deploy_'],
+      promptSections: ['tool:deploy'],
+    },
+  },
+})
+```
+
+设置页只显示带有上述关联的用户技能（浏览器/电脑旧版本另有兼容映射）。选择
+Skill 后，两项资源会自动合并并以只读方式展示。旧配置中没有对应 Skill 的
+Tool/Prompt 值会被运行时忽略，并在保存设置时清理。
 
 安装或配置后重启 `dsh web` 并刷新页面即可生效。

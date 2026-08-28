@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   apply,
+  capabilitiesFromSkillAssociations,
   capabilityForSkill,
   capabilityForTool,
   enabledCapabilities,
+  skillGateAssociation,
   userInvokedSkillName,
   userInvokedSkillNames,
 } from '../src/index.ts'
@@ -100,6 +102,116 @@ describe('capability routing', () => {
 
   it('does not match prefix as substring (only startswith)', () => {
     expect(capabilityForTool(CAPS, 'my_browser_tool')).toBeUndefined()
+  })
+})
+
+describe('skill-driven Tool/Prompt associations', () => {
+  it('reads only the namespaced association metadata', () => {
+    expect(skillGateAssociation({
+      metadata: {
+        'dsh:gate': {
+          toolPrefixes: [' browser_ ', 'browser_', ''],
+          promptSections: ['tool:bridge-browser'],
+        },
+      },
+    })).toEqual({
+      toolPrefixes: ['browser_'],
+      promptSections: ['tool:bridge-browser'],
+    })
+    expect(skillGateAssociation({ metadata: { other: { toolPrefixes: ['task_'] } } })).toBeUndefined()
+    expect(skillGateAssociation(null)).toBeUndefined()
+  })
+
+  it('derives Tool Prefixes and Prompt Sections only from selected skills', () => {
+    const capabilities = {
+      browser: {
+        enabled: true,
+        skillNames: ['browser', 'not-adapted'],
+        // These stale values must not leak into the resolved gate.
+        toolPrefixes: ['browser_', 'task_'],
+        promptSections: ['tool:bridge-browser', 'tool:taskboard'],
+      },
+      stale: {
+        enabled: true,
+        skillNames: [],
+        toolPrefixes: ['other_'],
+        promptSections: ['tool:other'],
+      },
+    }
+    const associations = {
+      browser: { toolPrefixes: ['browser_'], promptSections: ['tool:bridge-browser'] },
+    }
+
+    expect(capabilitiesFromSkillAssociations(capabilities, associations)).toEqual({
+      browser: {
+        enabled: true,
+        skillNames: ['browser'],
+        toolPrefixes: ['browser_'],
+        promptSections: ['tool:bridge-browser'],
+      },
+      stale: {
+        enabled: true,
+        skillNames: [],
+        toolPrefixes: [],
+        promptSections: [],
+      },
+    })
+  })
+})
+
+describe('discovery exposes only adapted skill resources', () => {
+  it('does not surface unannotated plugin tools or prompt sections', async () => {
+    let discoverHandler: ((endpoint: string, payload: unknown) => Promise<any>) | undefined
+    const connection = {
+      rpc: {
+        handle: (_path: string, handler: (endpoint: string, payload: unknown) => Promise<any>) => {
+          discoverHandler = handler
+        },
+      },
+    }
+    const skills = {
+      list: async () => [
+        { name: 'browser', invocation: { userInvocable: true } },
+        { name: 'taskboard', invocation: { userInvocable: true } },
+      ],
+      get: async (name: string) => ({ name }),
+    }
+    const context = {
+      get: (name: string) => name === 'skills'
+        ? skills
+        : name === 'systemPrompt'
+          ? { assemble: async () => ({ sections: [
+              { name: 'general:intro' },
+              { name: 'tool:bridge-browser' },
+              { name: 'tool:taskboard' },
+            ] }) }
+          : undefined,
+      inject: (deps: string[], callback: (scope: any) => void) => {
+        if (deps.includes('connection')) callback({ get: () => connection })
+        else callback({ settings: { register: () => undefined } })
+      },
+      on: () => undefined,
+      tools: {
+        guard: () => undefined,
+        schemas: () => [
+          { name: 'browser_snapshot' },
+          { name: 'taskboard_list' },
+        ],
+      },
+    }
+
+    apply(context as never, { capabilities: CAPS })
+    expect(discoverHandler).toBeDefined()
+    const result = await discoverHandler?.('discover', {})
+
+    expect(result?.ok).toBe(true)
+    expect(result?.value.skills).toEqual([{
+      name: 'browser',
+      toolPrefixes: ['browser_'],
+      promptSections: ['tool:bridge-browser'],
+    }])
+    expect(result?.value.toolGroups.map((group: any) => group.prefix)).toEqual(['browser_'])
+    expect(result?.value.sections).toEqual(['tool:bridge-browser'])
   })
 })
 

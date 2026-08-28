@@ -1,9 +1,11 @@
-# dsh-tool-lazy-gate bundle patch: one host-plane row gating the high-privilege
-# browser_* / computer_use_* tool families per session. Unlock is USER-explicit
+# dsh-tool-lazy-gate bundle patch: one host-plane row gating configured tool
+# families (browser_*, computer_use_*, taskboard_* in this profile) per session.
+# Unlock is USER-explicit
 # skill invocation only; a model skill() call can never grant itself access.
 #
-# Capabilities are data-driven: tool prefixes, skill names, and prompt sections
-# are config, so swapping a browser/computer plugin only changes this file.
+# Skill Names are the authoritative gate selectors. Tool prefixes and prompt
+# sections are derived from the selected adapted skill (metadata['dsh:gate']); the
+# host keeps a narrow browser/computer compatibility mapping for older plugins.
 
 - insert:
     - id: tool-lazy-gate
@@ -13,12 +15,9 @@
           browser:
             enabled: true
             skillNames: [browser]
-            toolPrefixes: [browser_]
-            promptSections: [tool:bridge-browser]
           computer:
             enabled: true
             skillNames: [computer-use]
-            toolPrefixes: [computer_use_]
-            promptSections:
-              - tool:computer
-              - tool:computer-policy
+          taskboard:
+            enabled: true
+            skillNames: [taskboard]

@@ -28,8 +28,9 @@
  *   `user/message` log (only `skill-invocation` entries), never from model
  *   `tool/call` history. A new session starts locked again.
  *
- * Configuration is capability-driven: tool prefixes, skill names, and prompt
- * sections are data, not code (see `cordis.patch.yml`).
+ * Configuration is skill-driven: `skillNames` selects the capability, while
+ * adapted plugins publish their Tool/Prompt association as skill metadata. The
+ * shipped patch supplies browser/computer compatibility defaults.
  *
  * @module dsh-tool-lazy-gate
  */
@@ -59,10 +60,31 @@ export interface Capability {
   enabled: boolean
   /** Skill names whose USER invocation unlocks this capability (e.g. `/browser`). */
   skillNames: string[]
-  /** Tool-name prefixes this capability gates (e.g. `browser_`). */
+  /**
+   * Tool-name prefixes this capability gates. These values are derived from the
+   * selected `skillNames`; they remain in the config for backwards-compatible
+   * persistence and direct YAML seeds.
+   */
   toolPrefixes: string[]
-  /** System-prompt section names to suppress while locked. */
+  /**
+   * System-prompt section names to suppress while locked. These values are
+   * derived from the selected `skillNames` for the same reason as prefixes.
+   */
   promptSections: string[]
+}
+
+/** Metadata key used by an adapted skill to publish its gateable resources. */
+export const GATE_METADATA_KEY = 'dsh:gate'
+
+/** Tool and prompt resources associated with one user-invocable skill. */
+export interface SkillGateAssociation {
+  toolPrefixes: string[]
+  promptSections: string[]
+}
+
+/** A skill plus the resources an adapted plugin explicitly associates with it. */
+export interface DiscoveredSkillGateAssociation extends SkillGateAssociation {
+  name: string
 }
 
 export interface Config {
@@ -94,6 +116,220 @@ const DEFAULT_CAPABILITIES: Record<string, Capability> = {
     toolPrefixes: ['computer_use_'],
     promptSections: ['tool:computer', 'tool:computer-policy'],
   },
+}
+
+/**
+ * Normalize a metadata/config list without retaining borrowed values. The
+ * settings and skill registries are runtime-owned objects; gates only keep
+ * these small string snapshots.
+ */
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const normalized = item.trim()
+    if (normalized.length === 0 || seen.has(normalized)) continue
+    seen.add(normalized)
+    result.push(normalized)
+  }
+  return result
+}
+
+function association(toolPrefixes: unknown, promptSections: unknown): SkillGateAssociation | undefined {
+  const normalized = {
+    toolPrefixes: stringList(toolPrefixes),
+    promptSections: stringList(promptSections),
+  }
+  return normalized.toolPrefixes.length > 0 || normalized.promptSections.length > 0 ? normalized : undefined
+}
+
+/**
+ * Read the opt-in association published by an adapted skill plugin.
+ *
+ * The namespace deliberately lives under the skill's generic metadata object so
+ * an adapted plugin does not need to depend on this package. Unannotated skills
+ * are not gate candidates, which prevents unrelated tools or prompt sections
+ * from leaking into the configuration UI.
+ */
+export function skillGateAssociation(skill: unknown): SkillGateAssociation | undefined {
+  if (typeof skill !== 'object' || skill === null) return undefined
+  const metadata = (skill as { metadata?: unknown }).metadata
+  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) return undefined
+  const gate = (metadata as Record<string, unknown>)[GATE_METADATA_KEY]
+  if (typeof gate !== 'object' || gate === null || Array.isArray(gate)) return undefined
+  const record = gate as { toolPrefixes?: unknown; promptSections?: unknown }
+  return association(record.toolPrefixes, record.promptSections)
+}
+
+function mergeAssociation(left: SkillGateAssociation | undefined, right: SkillGateAssociation): SkillGateAssociation {
+  return {
+    toolPrefixes: [...new Set([...(left?.toolPrefixes ?? []), ...right.toolPrefixes])],
+    promptSections: [...new Set([...(left?.promptSections ?? []), ...right.promptSections])],
+  }
+}
+
+function associationsFromCapabilities(capabilities: Record<string, Capability>): Record<string, SkillGateAssociation> {
+  const result: Record<string, SkillGateAssociation> = {}
+  for (const cap of Object.values(capabilities)) {
+    for (const skillName of stringList(cap.skillNames)) {
+      const next = association(cap.toolPrefixes, cap.promptSections)
+      if (next === undefined) continue
+      result[skillName] = mergeAssociation(result[skillName], next)
+    }
+  }
+  return result
+}
+
+/**
+ * The shipped browser/computer rows predate the skill metadata contract. Keep
+ * their explicit patch mapping as a narrow compatibility fallback, while all
+ * other skills must opt in through `metadata['dsh:gate']`.
+ */
+const DEFAULT_SKILL_ASSOCIATIONS = associationsFromCapabilities(DEFAULT_CAPABILITIES)
+
+function cloneAssociations(source: Record<string, SkillGateAssociation>): Record<string, SkillGateAssociation> {
+  const result: Record<string, SkillGateAssociation> = {}
+  for (const [name, value] of Object.entries(source)) {
+    result[name] = {
+      toolPrefixes: [...value.toolPrefixes],
+      promptSections: [...value.promptSections],
+    }
+  }
+  return result
+}
+
+/**
+ * Apply the skill association map to a capability config. `skillNames` is the
+ * only authoritative selector; stale or hand-added prefixes/sections are
+ * discarded rather than silently gating an unrelated plugin.
+ */
+export function capabilitiesFromSkillAssociations(
+  capabilities: Record<string, Capability>,
+  associations: Record<string, SkillGateAssociation> = DEFAULT_SKILL_ASSOCIATIONS,
+): Record<string, Capability> {
+  const result: Record<string, Capability> = {}
+  for (const [key, cap] of Object.entries(capabilities)) {
+    const skillNames = stringList(cap.skillNames).filter(skillName => associations[skillName] !== undefined)
+    const toolPrefixes = new Set<string>()
+    const promptSections = new Set<string>()
+    for (const skillName of skillNames) {
+      const linked = associations[skillName]
+      if (linked === undefined) continue
+      for (const prefix of linked.toolPrefixes) toolPrefixes.add(prefix)
+      for (const section of linked.promptSections) promptSections.add(section)
+    }
+    result[key] = {
+      ...cap,
+      skillNames,
+      toolPrefixes: [...toolPrefixes],
+      promptSections: [...promptSections],
+    }
+  }
+  return result
+}
+
+interface SkillSummaryLike {
+  name?: unknown
+  invocation?: { userInvocable?: unknown }
+  metadata?: unknown
+}
+
+interface SkillsService {
+  list?: () => Promise<readonly SkillSummaryLike[]>
+  get?: (name: string) => Promise<SkillSummaryLike | undefined>
+}
+
+interface SkillAssociationCatalog {
+  /** All associations known to the runtime, used to resolve saved config. */
+  associations: Record<string, SkillGateAssociation>
+  /** Only associations whose declared resources are currently registered. */
+  skills: DiscoveredSkillGateAssociation[]
+}
+
+function liveToolNames(ctx: Context): string[] {
+  try {
+    return ctx.tools.schemas().map(tool => tool.name).filter((name): name is string => typeof name === 'string')
+  } catch {
+    return []
+  }
+}
+
+async function livePromptSectionNames(ctx: Context): Promise<Set<string>> {
+  const systemPrompt = ctx.get('systemPrompt') as { assemble?: () => Promise<{ sections?: Array<{ name?: unknown }> }> } | undefined
+  if (systemPrompt?.assemble === undefined) return new Set<string>()
+  try {
+    const assembled = await systemPrompt.assemble()
+    return new Set(
+      (assembled.sections ?? [])
+        .map(section => section.name)
+        .filter((name): name is string => typeof name === 'string'),
+    )
+  } catch {
+    return new Set<string>()
+  }
+}
+
+/**
+ * Discover only user-invocable skills that opt into lazy-gate metadata. The
+ * shipped browser/computer patch remains a compatibility fallback until those
+ * external plugins publish the same metadata themselves.
+ */
+async function discoverSkillAssociationCatalog(ctx: Context): Promise<SkillAssociationCatalog> {
+  const associations = cloneAssociations(DEFAULT_SKILL_ASSOCIATIONS)
+  const skills = ctx.get('skills') as SkillsService | undefined
+  let listedUserSkills: Set<string> | undefined
+
+  if (skills?.list !== undefined) {
+    try {
+      const listed = await skills.list()
+      if (Array.isArray(listed)) {
+        listedUserSkills = new Set<string>()
+        for (const summary of listed) {
+          if (typeof summary.name !== 'string' || summary.name.length === 0) continue
+          if (summary.invocation?.userInvocable === false) continue
+          listedUserSkills.add(summary.name)
+
+          let definition: SkillSummaryLike = summary
+          if (skills.get !== undefined) {
+            try {
+              definition = (await skills.get(summary.name)) ?? summary
+            } catch {
+              // An unavailable body must not prevent the compatibility mapping
+              // or the other skills from appearing in the settings page.
+            }
+          }
+          const declared = skillGateAssociation(definition)
+          if (declared !== undefined) associations[summary.name] = declared
+        }
+      }
+    } catch {
+      // The skill registry is optional. The default browser/computer mapping
+      // still keeps the existing gate operational in older profiles.
+    }
+  }
+
+  // If the skill catalog is authoritative, do not retain fallback entries for
+  // plugins that are no longer installed or no longer expose user invocation.
+  if (listedUserSkills !== undefined) {
+    for (const name of Object.keys(associations)) {
+      if (!listedUserSkills.has(name)) delete associations[name]
+    }
+  }
+
+  const toolNames = liveToolNames(ctx)
+  const sectionNames = await livePromptSectionNames(ctx)
+  const visibleSkills: DiscoveredSkillGateAssociation[] = []
+  for (const [name, linked] of Object.entries(associations)) {
+    const toolPrefixes = linked.toolPrefixes.filter(prefix => toolNames.some(toolName => toolName.startsWith(prefix)))
+    const promptSections = linked.promptSections.filter(sectionName => sectionNames.has(sectionName))
+    if (toolPrefixes.length === 0 && promptSections.length === 0) continue
+    visibleSkills.push({ name, toolPrefixes, promptSections })
+  }
+  visibleSkills.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
+
+  return { associations, skills: visibleSkills }
 }
 
 /** Per-session gate state, keyed by the durable Session object. */
@@ -266,7 +502,11 @@ function gate(session: { events: ArrayLike<unknown> }, agent: Agent, capabilitie
 }
 
 /** Read the live capability list: settings user layer wins, then config, then defaults. */
-function readCapabilities(settings: { get(ns: ReturnType<typeof settingsNamespace>): unknown } | undefined, config: Config): Record<string, Capability> {
+function readCapabilities(
+  settings: { get(ns: ReturnType<typeof settingsNamespace>): unknown } | undefined,
+  config: Config,
+  associations: Record<string, SkillGateAssociation> = DEFAULT_SKILL_ASSOCIATIONS,
+): Record<string, Capability> {
   const fromSettings = settings === undefined ? undefined : settings.get(GATE_NAMESPACE)
   // `settings.get` returns the schema-resolved value (base + user layer +
   // defaults), so `capabilities` is always present once the namespace is
@@ -274,12 +514,14 @@ function readCapabilities(settings: { get(ns: ReturnType<typeof settingsNamespac
   if (fromSettings !== undefined && typeof fromSettings === 'object' && fromSettings !== null) {
     const caps = (fromSettings as { capabilities?: unknown }).capabilities
     if (typeof caps === 'object' && caps !== null) {
-      return enabledCapabilities(caps as Record<string, Capability>)
+      return enabledCapabilities(capabilitiesFromSkillAssociations(caps as Record<string, Capability>, associations))
     }
   }
   const fromConfig = config.capabilities ?? {}
-  if (Object.keys(fromConfig).length > 0) return enabledCapabilities(fromConfig)
-  return enabledCapabilities(DEFAULT_CAPABILITIES)
+  if (Object.keys(fromConfig).length > 0) {
+    return enabledCapabilities(capabilitiesFromSkillAssociations(fromConfig, associations))
+  }
+  return enabledCapabilities(capabilitiesFromSkillAssociations(DEFAULT_CAPABILITIES, associations))
 }
 
 /** Get the live settings scope, or undefined when no settings provider is mounted. */
@@ -288,6 +530,18 @@ function settingsScope(ctx: Context): { get(ns: ReturnType<typeof settingsNamesp
 }
 
 export function apply(ctx: Context, config: Config = {} as Config): void {
+  // Resolve skill associations once per catalog generation. The result is shared
+  // by the first system-prompt assembly, the pre-step snapshot, and the settings
+  // discovery RPC so all three surfaces agree on what a skill unlocks.
+  // Defer the first catalog read until a real session/page request. This lets
+  // later composition rows finish registering their skills before fallback
+  // entries are pruned as absent.
+  let associationPromise: Promise<SkillAssociationCatalog> | undefined
+  const associationCatalog = (): Promise<SkillAssociationCatalog> => {
+    associationPromise ??= discoverSkillAssociationCatalog(ctx)
+    return associationPromise
+  }
+
   // Register the durable settings namespace so a configuration UI renders the
   // capability list. The composition `base` seeds it from `cordis.patch.yml`;
   // `applies: 'live'` reflects that changes take effect on the next session
@@ -312,8 +566,9 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
   // fire-and-forget. Inspecting the claimed user messages here both snapshots
   // the latest settings and removes the first-request race while keeping
   // model-generated tool calls ineligible.
-  ctx.on('agent/pre-step', ({ agent, messages }, next) => {
-    const state = gate(agent.session, agent, readCapabilities(settingsScope(ctx), config))
+  ctx.on('agent/pre-step', async ({ agent, messages }, next) => {
+    const catalog = await associationCatalog()
+    const state = gate(agent.session, agent, readCapabilities(settingsScope(ctx), config, catalog.associations))
     unlockForSkillNames(state, userInvokedSkillNames(messages))
     return next()
   })
@@ -353,7 +608,8 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const agent = context.agent as Agent | undefined
     if (agent === undefined) return next()
-    const state = restoreState(agent.session, readCapabilities(settingsScope(ctx), config))
+    const catalog = await associationCatalog()
+    const state = restoreState(agent.session, readCapabilities(settingsScope(ctx), config, catalog.associations))
     const assembled = await next()
     let filtered = false
     const sections = assembled.sections.filter(section => {
@@ -370,9 +626,9 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     return { ...assembled, sections }
   })
 
-  // Discovery RPC for the configuration page: enumerate candidate skills,
-  // tool prefixes (grouped), and prompt sections so the form presents
-  // selectable options instead of requiring hand-typed internal identifiers.
+  // Discovery RPC for the configuration page. Resource candidates come only
+  // from an adapted skill's `metadata['dsh:gate']` declaration (or the two
+  // shipped compatibility rows), never from the global tool/prompt registries.
   ctx.inject(['connection'], (scope) => {
     const connection = scope.get('connection') as { rpc?: { handle?: (path: string, handler: (endpoint: string, payload: unknown) => Promise<unknown>, opts?: unknown) => void } } | undefined
     if (connection?.rpc?.handle === undefined) return
@@ -383,35 +639,33 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
           return { ok: false, error: { code: 'bad-request', message: `Unknown tool-lazy-gate RPC endpoint: ${endpoint}`, details: {} } }
         }
 
-        // 1. Tool names (global registry view) → group by prefix.
-        const toolNames = ctx.tools.schemas().map(tool => tool.name)
-        const prefixMap = new Map<string, string[]>()
-        for (const name of toolNames) {
-          const sep = name.lastIndexOf('_')
-          const prefix = sep > 0 ? name.slice(0, sep + 1) : name
-          const bucket = prefixMap.get(prefix) ?? []
-          bucket.push(name)
-          prefixMap.set(prefix, bucket)
+        const catalog = await associationCatalog()
+        const toolNames = liveToolNames(ctx)
+        const toolGroups = catalog.skills
+          .flatMap(skill => skill.toolPrefixes)
+          .filter((prefix, index, prefixes) => prefixes.indexOf(prefix) === index)
+          .map(prefix => {
+            const tools = toolNames.filter(toolName => toolName.startsWith(prefix))
+            return { prefix, tools, count: tools.length }
+          })
+          .filter(group => group.count > 0)
+          .sort((left, right) => right.count - left.count || left.prefix.localeCompare(right.prefix))
+        const sections = catalog.skills
+          .flatMap(skill => skill.promptSections)
+          .filter((section, index, names) => names.indexOf(section) === index)
+
+        return {
+          ok: true,
+          value: {
+            // Each entry carries its own resources. The client can therefore
+            // derive both fields from the selected Skill Names.
+            skills: catalog.skills,
+            // Keep these aggregate fields for older clients; they are already
+            // restricted to resources declared by adapted skills.
+            toolGroups,
+            sections,
+          },
         }
-        const toolGroups = [...prefixMap.entries()]
-          .map(([prefix, tools]) => ({ prefix, tools, count: tools.length }))
-          .sort((a, b) => b.count - a.count)
-
-        // 2. Skills (user-invocable only, as unlock candidates).
-        const skillsService = ctx.get('skills') as { list?: (opts?: unknown) => Promise<Array<{ name: string; invocation?: { userInvocable?: boolean } }>> } | undefined
-        const skills = skillsService?.list !== undefined
-          ? (await skillsService.list())
-              .filter(skill => skill.invocation?.userInvocable !== false)
-              .map(skill => ({ name: skill.name }))
-          : []
-
-        // 3. Prompt sections (global assembly).
-        const systemPrompt = ctx.get('systemPrompt') as { assemble?: (ctx?: unknown) => Promise<{ sections: Array<{ name: string }> }> } | undefined
-        const sections = systemPrompt?.assemble !== undefined
-          ? (await systemPrompt.assemble()).sections.map(section => section.name)
-          : []
-
-        return { ok: true, value: { skills, toolGroups, sections } }
       } catch (error) {
         return { ok: false, error: { code: 'internal', message: error instanceof Error ? error.message : String(error), details: {} } }
       }
