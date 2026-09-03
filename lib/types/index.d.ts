@@ -49,7 +49,7 @@ export interface ToolLazyGateService {
     grant(agent: Agent, skillNames: readonly string[], provenance: ToolLazyGateGrantProvenance): void;
 }
 /** Durable settings namespace owning the runtime-managed capability list. */
-export declare const GATE_NAMESPACE: import("@deepseek-ai/dsh-settings").SettingsNamespace;
+export declare const GATE_NAMESPACE: "tool-lazy-gate";
 /** One gated capability family, fully data-driven. */
 export interface Capability {
     /** Whether this capability participates in gating at all. */

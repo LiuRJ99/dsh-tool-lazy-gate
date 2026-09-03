@@ -266,7 +266,7 @@ describe('discovery exposes only adapted skill resources', () => {
 describe('loopback panel grant', () => {
   it('requires a live session and can never grant browser/computer from client payload', async () => {
     let handler: ((endpoint: string, payload: unknown) => Promise<any>) | undefined
-    const agent = { session: { events: [] }, ctx: { tools: { schemas: () => [], restrict: () => () => undefined } } }
+    const agent = { session: { snapshotEvents: () => [] }, ctx: { tools: { schemas: () => [], restrict: () => () => undefined } } }
     const connection = {
       rpc: {
         handle: (_path: string, callback: (endpoint: string, payload: unknown) => Promise<any>) => {
@@ -353,7 +353,7 @@ describe('capability gate state machine (including first-assembly and no-plugin 
   it('Case 1: initial session start locks tools and calls tools.restrict with matching prefixes', async () => {
     const { context, handlers } = createMockContext()
     const deniedTools: string[][] = []
-    const session = { events: [] }
+    const session = { snapshotEvents: () => [] }
     const agent = {
       session,
       ctx: {
@@ -385,7 +385,7 @@ describe('capability gate state machine (including first-assembly and no-plugin 
   // Case 2: Execution guard blocks locked tools
   it('Case 2: tools.guard denies execution when capability is locked with helpful hint', async () => {
     const { context, handlers, getGuard } = createMockContext()
-    const session = { events: [] }
+    const session = { snapshotEvents: () => [] }
     const agent = {
       session,
       ctx: {
@@ -423,7 +423,7 @@ describe('capability gate state machine (including first-assembly and no-plugin 
   it('Case 3: user gesture (/browser) in user message unlocks capability at pre-step', async () => {
     const { context, handlers, getGuard } = createMockContext()
     let browserDisposed = false
-    const session = { events: [] }
+    const session = { snapshotEvents: () => [] }
     const agent = {
       session,
       ctx: {
@@ -459,7 +459,7 @@ describe('capability gate state machine (including first-assembly and no-plugin 
   it('Case 4: durable user/message with skill-invocation source unlocks capability via session/event', async () => {
     const { context, handlers, getGuard } = createMockContext()
     let computerDisposed = false
-    const session = { events: [] }
+    const session = { snapshotEvents: () => [] }
     const agent = {
       session,
       ctx: {
@@ -497,7 +497,7 @@ describe('capability gate state machine (including first-assembly and no-plugin 
   it('Case 5: model calling skill("browser") via tool/call cannot unlock capability', async () => {
     const { context, handlers, getGuard } = createMockContext()
     let browserDisposed = false
-    const session = { events: [] }
+    const session = { snapshotEvents: () => [] }
     const agent = {
       session,
       ctx: {
@@ -534,7 +534,7 @@ describe('capability gate state machine (including first-assembly and no-plugin 
   it('Case 6: session resume reconstructs prior unlocks from durable log (only skill-invocation events)', async () => {
     const { context, handlers, getGuard } = createMockContext()
     const session = {
-      events: [
+      snapshotEvents: () => [
         { type: 'user/message', data: { source: { kind: 'user' } } },
         { type: 'tool/call', data: { name: 'skill', arguments: '{"name":"computer-use"}' } },
         { type: 'user/message', data: { source: { kind: 'skill-invocation', name: 'browser' } } },
@@ -575,7 +575,7 @@ describe('capability gate state machine (including first-assembly and no-plugin 
   it('Case 7: first system-prompt/assemble filters locked sections and initializes the guard before pre-step', async () => {
     const { context, handlers, getGuard } = createMockContext()
     const deniedTools: string[][] = []
-    const session = { events: [] }
+    const session = { snapshotEvents: () => [] }
     const agent = {
       session,
       ctx: {
@@ -623,7 +623,7 @@ describe('capability gate state machine (including first-assembly and no-plugin 
     const { context, handlers, getGuard } = createMockContext()
     const deniedTools: string[][] = []
     const session = {
-      events: [
+      snapshotEvents: () => [
         { type: 'user/message', data: { source: { kind: 'skill-invocation', name: 'browser' } } },
       ],
     }
@@ -669,7 +669,7 @@ describe('capability gate state machine (including first-assembly and no-plugin 
   // Case 9: System prompt section suppression when capability is locked
   it('Case 9: system-prompt/assemble suppresses prompt sections when capability is locked', async () => {
     const { context, handlers } = createMockContext()
-    const session = { events: [] }
+    const session = { snapshotEvents: () => [] }
     const agent = {
       session,
       ctx: {
@@ -710,7 +710,7 @@ describe('capability gate state machine (including first-assembly and no-plugin 
   // Case 10: System prompt section retention when capability is unlocked
   it('Case 10: system-prompt/assemble preserves prompt sections once capability is unlocked', async () => {
     const { context, handlers } = createMockContext()
-    const session = { events: [] }
+    const session = { snapshotEvents: () => [] }
     const agent = {
       session,
       ctx: {
@@ -754,7 +754,7 @@ describe('capability gate state machine (including first-assembly and no-plugin 
       computer: { enabled: true, skillNames: ['computer-use'], toolPrefixes: ['computer_use_'], promptSections: ['tool:computer'] },
     }
     const deniedTools: string[][] = []
-    const session = { events: [] }
+    const session = { snapshotEvents: () => [] }
     const agent = {
       session,
       ctx: {
@@ -795,7 +795,7 @@ describe('capability gate state machine (including first-assembly and no-plugin 
       },
     }
     const deniedTools: string[][] = []
-    const session = { events: [] }
+    const session = { snapshotEvents: () => [] }
     const agent = {
       session,
       ctx: {
@@ -830,7 +830,7 @@ describe('capability gate state machine (including first-assembly and no-plugin 
   it('Case 12: graceful degradation when gated plugin is not installed (no matching tool schemas)', async () => {
     const { context, handlers } = createMockContext()
     let restrictCalled = false
-    const session = { events: [] }
+    const session = { snapshotEvents: () => [] }
     const agent = {
       session,
       ctx: {

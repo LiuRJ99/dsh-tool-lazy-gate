@@ -38,7 +38,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-settings'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-tools'
@@ -62,7 +61,7 @@ export interface ToolLazyGateService {
 }
 
 /** Durable settings namespace owning the runtime-managed capability list. */
-export const GATE_NAMESPACE = settingsNamespace('tool-lazy-gate')
+export const GATE_NAMESPACE = 'tool-lazy-gate' as const
 
 /** One gated capability family, fully data-driven. */
 export interface Capability {
@@ -499,9 +498,9 @@ function grantForAgent(agent: Agent, skillNames: readonly string[], provenance: 
 }
 
 /** Reconstruct prior unlocks from the durable log: USER skill invocations only. */
-function scanPriorUnlocks(session: { events: ArrayLike<unknown> }, capabilities: Record<string, Capability>): string[] {
+function scanPriorUnlocks(session: { snapshotEvents(): readonly unknown[] }, capabilities: Record<string, Capability>): string[] {
   const unlocked = new Set<string>()
-  for (const event of Array.from(session.events)) {
+  for (const event of session.snapshotEvents()) {
     const skillName = userInvokedSkillName(event)
     if (skillName === undefined) continue
     const key = capabilityForSkill(capabilities, skillName)
@@ -511,7 +510,7 @@ function scanPriorUnlocks(session: { events: ArrayLike<unknown> }, capabilities:
 }
 
 /** Restore prior user skill invocations into one session's in-memory state. */
-function restoreState(session: { events: ArrayLike<unknown> }, capabilities: Record<string, Capability>): GateState {
+function restoreState(session: { snapshotEvents(): readonly unknown[] }, capabilities: Record<string, Capability>): GateState {
   const state = stateFor(session, capabilities)
   if (state.restored) return state
 
@@ -539,7 +538,7 @@ function enforceGate(agent: Agent, state: GateState): void {
 }
 
 /** Restore durable state, then install the per-session tool restrictions. */
-function gate(session: { events: ArrayLike<unknown> }, agent: Agent, capabilities: Record<string, Capability>): GateState {
+function gate(session: { snapshotEvents(): readonly unknown[] }, agent: Agent, capabilities: Record<string, Capability>): GateState {
   const state = restoreState(session, capabilities)
   enforceGate(agent, state)
   return state
@@ -547,7 +546,7 @@ function gate(session: { events: ArrayLike<unknown> }, agent: Agent, capabilitie
 
 /** Read the live capability list: settings user layer wins, then config, then defaults. */
 function readCapabilities(
-  settings: { get(ns: ReturnType<typeof settingsNamespace>): unknown } | undefined,
+  settings: { get(ns: string): unknown } | undefined,
   config: Config,
   associations: Record<string, SkillGateAssociation> = DEFAULT_SKILL_ASSOCIATIONS,
 ): Record<string, Capability> {
@@ -569,8 +568,8 @@ function readCapabilities(
 }
 
 /** Get the live settings scope, or undefined when no settings provider is mounted. */
-function settingsScope(ctx: Context): { get(ns: ReturnType<typeof settingsNamespace>): unknown } | undefined {
-  return ctx.get('settings') as { get(ns: ReturnType<typeof settingsNamespace>): unknown } | undefined
+function settingsScope(ctx: Context): { get(ns: string): unknown } | undefined {
+  return ctx.get('settings') as { get(ns: string): unknown } | undefined
 }
 
 export function apply(ctx: Context, config: Config = {} as Config): void {
