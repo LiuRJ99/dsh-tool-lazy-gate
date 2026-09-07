@@ -27,6 +27,15 @@
  * - On resume the gate reconstructs prior unlocks from the durable
  *   `user/message` log (only `skill-invocation` entries), never from model
  *   `tool/call` history. A new session starts locked again.
+ * - Subagent children inherit their live ancestor chain's unlocks at every
+ *   step boundary: a capability unlocked in the user's session (e.g. via
+ *   `/browser`) becomes usable in delegated child sessions without a repeated
+ *   gesture nobody can perform there. The durable `parentSession` header
+ *   bounds the walk; a child resumed without a live parent stays locked.
+ * - The host service also exposes a read-only `isUnlocked()` query so trusted
+ *   same-process plugins can gate capability-owned context delivery (e.g.
+ *   browser page snapshots) on the session lock state instead of pushing
+ *   content into sessions that never unlocked the capability.
  *
  * Configuration is skill-driven: `skillNames` selects the capability, while
  * adapted plugins publish their Tool/Prompt association as skill metadata. The
@@ -58,6 +67,15 @@ export type ToolLazyGateGrantProvenance = 'panel-create' | 'execution' | 'claim'
 export interface ToolLazyGateService {
   /** Grant configured lazy-gate Skills on one live Agent/session. */
   grant(agent: Agent, skillNames: readonly string[], provenance: ToolLazyGateGrantProvenance): void
+  /**
+   * Live read-only query for trusted same-process host plugins (e.g. a browser
+   * context injector deciding whether to deliver page snapshots): whether the
+   * capability selected by `skillName` is currently unlocked for this Agent's
+   * session. Returns true when the session does not gate that skill at all
+   * (no capability configured, capability disabled, or unknown skill), so
+   * consumers degrade to their un-gated behavior instead of blocking forever.
+   */
+  isUnlocked(agent: Agent, skillName: string): boolean
 }
 
 /** Durable settings namespace owning the runtime-managed capability list. */
@@ -470,6 +488,90 @@ function unlockForSkillNames(state: GateState, skillNames: readonly string[]): v
   }
 }
 
+/** Recursion guard for ancestor walks (subagent delegation depth). */
+const MAX_LINEAGE_DEPTH = 16
+
+/**
+ * Durable `parentSession` lineage surface shared by live Session objects. The
+ * harness writes this header when a session is forked from another session
+ * (origin `subagent`), which is how the gate recognizes child sessions.
+ */
+function parentSessionId(session: object): string | undefined {
+  const header = (session as { header?: { parentSession?: unknown } }).header
+  const parent = header?.parentSession
+  return typeof parent === 'string' && parent.length > 0 ? parent : undefined
+}
+
+/** The live agents registry, or undefined when it is not mounted. */
+function agentsRegistry(ctx: Context): { get(id: string): unknown } | undefined {
+  try {
+    const agents = ctx.get('agents') as { get?(id: string): unknown } | undefined
+    return agents?.get === undefined ? undefined : (agents as { get(id: string): unknown })
+  } catch {
+    return undefined
+  }
+}
+
+/** Skill names of every capability currently unlocked in one live gate state. */
+function unlockedSkillNamesInState(state: GateState): string[] {
+  const names: string[] = []
+  for (const [key, entry] of Object.entries(state.entries)) {
+    if (!entry.unlocked) continue
+    for (const skillName of state.capabilities[key]?.skillNames ?? []) {
+      if (!names.includes(skillName)) names.push(skillName)
+    }
+  }
+  return names
+}
+
+/** USER skill-invocation names recorded in one durable session log. */
+function unlockedSkillNamesInLog(session: { snapshotEvents(): readonly unknown[] }): string[] {
+  const names: string[] = []
+  for (const event of session.snapshotEvents()) {
+    const skillName = userInvokedSkillName(event)
+    if (skillName !== undefined && !names.includes(skillName)) names.push(skillName)
+  }
+  return names
+}
+
+/**
+ * Skill names unlocked anywhere in the live ancestor chain, resolved through
+ * the durable `parentSession` header. A subagent child never receives a
+ * user-facing skill-invocation of its own — `/browser` is typed into the
+ * parent session the user can address — so the child's gate inherits the
+ * ancestor's unlocked capabilities instead of demanding a repeated gesture
+ * nobody can perform in the child.
+ *
+ * Only live ancestors contribute: a disposed ancestor fails the walk closed,
+ * which keeps a resumed child locked (the parent's unlock context is gone).
+ * An ancestor whose gate state was already restored contributes its in-memory
+ * unlocks (freshest); otherwise its durable log is scanned for user
+ * invocations. The walk is bounded by {@link MAX_LINEAGE_DEPTH}.
+ */
+function inheritedUnlockSkillNames(ctx: Context, agent: Agent): string[] {
+  const registry = agentsRegistry(ctx)
+  if (registry === undefined) return []
+  const names = new Set<string>()
+  const seen = new Set<object>()
+  let current: object | undefined = agent.session as object
+  for (let depth = 0; depth < MAX_LINEAGE_DEPTH && current !== undefined; depth += 1) {
+    if (seen.has(current)) return []
+    seen.add(current)
+    const parentId = parentSessionId(current)
+    if (parentId === undefined) break
+    const parent = registry.get(parentId)
+    const parentSession = (parent as { session?: unknown } | undefined)?.session
+    if (typeof parentSession !== 'object' || parentSession === null) break
+    const parentState = stateBySession.get(parentSession as object)
+    const inherited = parentState?.restored === true
+      ? unlockedSkillNamesInState(parentState)
+      : unlockedSkillNamesInLog(parentSession as { snapshotEvents(): readonly unknown[] })
+    for (const skillName of inherited) names.add(skillName)
+    current = parentSession as object
+  }
+  return [...names]
+}
+
 const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 const GRANT_PROVENANCES = new Set<ToolLazyGateGrantProvenance>(['panel-create', 'execution', 'claim'])
 
@@ -579,6 +681,22 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
   const reflector = (ctx as unknown as { reflect?: { provide(name: string, value: unknown): unknown } }).reflect
   reflector?.provide(TOOL_LAZY_GATE_SERVICE, {
     grant: grantForAgent,
+    // Read-only half of the contract: lets trusted host plugins (bridge
+    // context injectors, companions) ask whether one skill's capability is
+    // unlocked for a live agent before delivering capability-owned content.
+    // Ungated skills answer true so consumers never block on a session that
+    // has no gate row for them.
+    isUnlocked: (agent: Agent, skillName: string): boolean => {
+      if (typeof skillName !== 'string' || skillName.length === 0) return true
+      const session = (agent as { session?: unknown } | null)?.session
+      if (typeof session !== 'object' || session === null) return true
+      const state = restoreState(
+        session as { snapshotEvents(): readonly unknown[] },
+        readCapabilities(settingsScope(ctx), config),
+      )
+      const key = capabilityForSkill(state.capabilities, skillName)
+      return key === undefined ? true : state.entries[key]?.unlocked === true
+    },
   } satisfies ToolLazyGateService)
 
   // Resolve skill associations once per catalog generation. The result is shared
@@ -621,6 +739,12 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
     const catalog = await associationCatalog()
     const state = gate(agent.session, agent, readCapabilities(settingsScope(ctx), config, catalog.associations))
     unlockForSkillNames(state, userInvokedSkillNames(messages))
+    // Subagent children inherit the live ancestor chain's unlocks at every
+    // step boundary: a child that was already running when the parent session
+    // unlocked becomes able to use the capability from its next step without
+    // a repeated user gesture in the child. Re-evaluating each step also
+    // covers children spawned before the parent's unlock.
+    unlockForSkillNames(state, inheritedUnlockSkillNames(ctx, agent))
     return next()
   })
 

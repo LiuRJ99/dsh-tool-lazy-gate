@@ -860,3 +860,150 @@ describe('capability gate state machine (including first-assembly and no-plugin 
     expect(restrictCalled).toBe(false)
   })
 })
+
+describe('host read query & subagent lineage inheritance', () => {
+  type Handler = (...args: any[]) => any
+
+  function createHostContext(agents: Record<string, any> = {}) {
+    const handlers = new Map<string, Handler[]>()
+    let guardFn: ((exec: any) => string | undefined) | undefined
+    let service: any
+    const context = {
+      get: (name: string) => name === 'agents' ? { get: (id: string) => agents[id] } : undefined,
+      inject: (_deps: string[], cb: (scope: any) => void) => {
+        cb({ settings: { register: () => undefined }, get: () => undefined })
+      },
+      on: (event: string, handler: Handler) => {
+        handlers.set(event, [...(handlers.get(event) ?? []), handler])
+      },
+      tools: {
+        guard: (fn: (exec: any) => string | undefined) => { guardFn = fn },
+        schemas: () => [
+          { name: 'browser_snapshot' },
+          { name: 'browser_click' },
+          { name: 'computer_use_click' },
+          { name: 'bash' },
+        ],
+      },
+      reflect: {
+        provide: (name: string, value: unknown) => {
+          if (name === TOOL_LAZY_GATE_SERVICE) service = value
+        },
+      },
+    }
+    return { context, handlers, getGuard: () => guardFn, getService: () => service }
+  }
+
+  function makeAgent(
+    session: any,
+    opts: { browserReleased?: () => void } = {},
+  ) {
+    return {
+      session,
+      ctx: {
+        tools: {
+          schemas: () => [{ name: 'browser_snapshot' }, { name: 'computer_use_click' }],
+          restrict: ({ deny }: { deny: string[] }) => {
+            if (deny.includes('browser_snapshot') && opts.browserReleased !== undefined) {
+              return () => opts.browserReleased!()
+            }
+            return () => undefined
+          },
+        },
+      },
+    }
+  }
+
+  async function runPreStep(harness: any, agent: any, text: string) {
+    const preStep = harness.handlers.get('agent/pre-step')?.[0]
+    await preStep?.({
+      agent,
+      messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text }] }],
+      turn: 1,
+      step: 1,
+      signal: new AbortController().signal,
+    }, async () => ({ kind: 'enter', messages: [] }))
+  }
+
+  it('isUnlocked answers the live lock state and reports un-gated skills as open', async () => {
+    const harness = createHostContext()
+    const session = { snapshotEvents: () => [] }
+    const agent = makeAgent(session)
+    apply(harness.context as never, { capabilities: CAPS })
+    const service = harness.getService()
+    expect(service).toBeDefined()
+
+    // Locked before any unlock; an unknown/ungated skill is open by contract.
+    expect(service.isUnlocked(agent, 'browser')).toBe(false)
+    expect(service.isUnlocked(agent, 'bash')).toBe(true)
+
+    await runPreStep(harness, agent, '/browser inspect this page')
+
+    expect(service.isUnlocked(agent, 'browser')).toBe(true)
+    expect(service.isUnlocked(agent, 'computer-use')).toBe(false)
+    expect(harness.getGuard()?.({ agent, name: 'browser_snapshot' })).toBeUndefined()
+    expect(harness.getGuard()?.({ agent, name: 'computer_use_click' })).toBeDefined()
+  })
+
+  it('treats a capability that is not configured in this session as unlocked', async () => {
+    const { context, getService } = createHostContext()
+    const agent = makeAgent({ snapshotEvents: () => [] })
+    apply(context as never, {
+      capabilities: {
+        computer: { enabled: true, skillNames: ['computer-use'], toolPrefixes: ['computer_use_'], promptSections: [] },
+      },
+    })
+    const service = getService()
+    expect(service.isUnlocked(agent, 'browser')).toBe(true)
+    expect(service.isUnlocked(agent, 'computer-use')).toBe(false)
+  })
+
+  it('subagent child inherits the live parent unlock at its next pre-step', async () => {
+    let childBrowserRestrictionReleased = false
+    const parentSession = {
+      header: { id: 'parent-session' },
+      snapshotEvents: () => [],
+    }
+    const childSession = {
+      header: { id: 'child-session', parentSession: 'parent-session' },
+      snapshotEvents: () => [],
+    }
+    const parentAgent = makeAgent(parentSession)
+    const childAgent = makeAgent(childSession, { browserReleased: () => { childBrowserRestrictionReleased = true } })
+    // The harness registers live agents including the child and its parent.
+    const agents = {
+      'parent-session': parentAgent,
+      'child-session': childAgent,
+    }
+    const ctx = createHostContext(agents)
+    apply(ctx.context as never, { capabilities: CAPS })
+
+    // Parent session unlocks browser via the user gesture.
+    await runPreStep(ctx, parentAgent, '/browser follow my page')
+
+    // Child's first step: browser restriction installed, then inherited unlock
+    // releases it — the child must not demand a repeated /browser.
+    await runPreStep(ctx, childAgent, 'please analyze the page')
+
+    expect(childBrowserRestrictionReleased).toBe(true)
+    expect(ctx.getGuard()?.({ agent: childAgent, name: 'browser_snapshot' })).toBeUndefined()
+    expect(ctx.getGuard()?.({ agent: childAgent, name: 'computer_use_click' })).toContain('/computer-use')
+  })
+
+  it('child stays locked when the parent is locked or no longer live', async () => {
+    // Parent locked: no inheritance.
+    const parentLocked = makeAgent({ header: { id: 'parent-locked' }, snapshotEvents: () => [] })
+    const ctxLocked = createHostContext({ 'parent-locked': parentLocked })
+    const childLocked = makeAgent({ header: { id: 'child-locked', parentSession: 'parent-locked' }, snapshotEvents: () => [] })
+    apply(ctxLocked.context as never, { capabilities: CAPS })
+    await runPreStep(ctxLocked, childLocked, 'plain message')
+    expect(ctxLocked.getGuard()?.({ agent: childLocked, name: 'browser_snapshot' })).toContain('/browser')
+
+    // Parent not live in the registry: fails closed to locked.
+    const ctxGone = createHostContext({})
+    const childGone = makeAgent({ header: { id: 'child-gone', parentSession: 'gone-parent' }, snapshotEvents: () => [] })
+    apply(ctxGone.context as never, { capabilities: CAPS })
+    await runPreStep(ctxGone, childGone, 'plain message')
+    expect(ctxGone.getGuard()?.({ agent: childGone, name: 'browser_snapshot' })).toContain('/browser')
+  })
+})

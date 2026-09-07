@@ -27,6 +27,15 @@
  * - On resume the gate reconstructs prior unlocks from the durable
  *   `user/message` log (only `skill-invocation` entries), never from model
  *   `tool/call` history. A new session starts locked again.
+ * - Subagent children inherit their live ancestor chain's unlocks at every
+ *   step boundary: a capability unlocked in the user's session (e.g. via
+ *   `/browser`) becomes usable in delegated child sessions without a repeated
+ *   gesture nobody can perform there. The durable `parentSession` header
+ *   bounds the walk; a child resumed without a live parent stays locked.
+ * - The host service also exposes a read-only `isUnlocked()` query so trusted
+ *   same-process plugins can gate capability-owned context delivery (e.g.
+ *   browser page snapshots) on the session lock state instead of pushing
+ *   content into sessions that never unlocked the capability.
  *
  * Configuration is skill-driven: `skillNames` selects the capability, while
  * adapted plugins publish their Tool/Prompt association as skill metadata. The
@@ -47,6 +56,15 @@ export type ToolLazyGateGrantProvenance = 'panel-create' | 'execution' | 'claim'
 export interface ToolLazyGateService {
     /** Grant configured lazy-gate Skills on one live Agent/session. */
     grant(agent: Agent, skillNames: readonly string[], provenance: ToolLazyGateGrantProvenance): void;
+    /**
+     * Live read-only query for trusted same-process host plugins (e.g. a browser
+     * context injector deciding whether to deliver page snapshots): whether the
+     * capability selected by `skillName` is currently unlocked for this Agent's
+     * session. Returns true when the session does not gate that skill at all
+     * (no capability configured, capability disabled, or unknown skill), so
+     * consumers degrade to their un-gated behavior instead of blocking forever.
+     */
+    isUnlocked(agent: Agent, skillName: string): boolean;
 }
 /** Durable settings namespace owning the runtime-managed capability list. */
 export declare const GATE_NAMESPACE: "tool-lazy-gate";
