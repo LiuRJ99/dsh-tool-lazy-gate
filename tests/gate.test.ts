@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 import {
   apply,
@@ -25,6 +26,16 @@ const CAPS = {
     promptSections: ['tool:computer', 'tool:computer-policy'],
   },
 }
+
+describe('Web bundle compatibility patch', () => {
+  it('keeps the temporary client-connection RPC workaround until the official fix', async () => {
+    const patch = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+
+    expect(patch).toMatch(/- id: connection\n  name: '@deepseek-ai\/dsh-client-connection'\n  inject: \[webRuntime, webServer\]/u)
+    expect(patch).toMatch(/official connection package fixes its/u)
+    expect(patch).toMatch(/registration/u)
+  })
+})
 
 describe('userInvokedSkillName — the unlock signal', () => {
   it('accepts a USER skill-invocation user/message', () => {

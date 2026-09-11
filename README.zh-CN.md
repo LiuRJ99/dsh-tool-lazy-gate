@@ -19,12 +19,15 @@ DeepSeek Harness (DSH) 权限门控插件：默认在会话内隐藏并拦截高
 ## 安装方式
 
 ```sh
-# 从 GitHub 仓库安装到 web profile
-dsh plugin --profile web add github:LiuRJ99/dsh-tool-lazy-gate
+# 安装经过验证的 v0.1.2 release tag
+dsh plugin --profile web add github:LiuRJ99/dsh-tool-lazy-gate#v0.1.2
 
 # 从本地源码安装
 dsh plugin --profile web add <path>/dsh-tool-lazy-gate
 ```
+
+v0.1.2 包含针对 DSH 0.1.5 Web connection 的临时兼容补丁；官方
+`@deepseek-ai/dsh-client-connection` 修复 RPC 注册上下文后，应移除该 bundle 补丁。
 
 ## 配置说明
 

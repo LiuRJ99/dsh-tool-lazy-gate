@@ -30,12 +30,16 @@ temptation while keeping the capability one explicit user gesture away.
 ## Install
 
 ```sh
-# Install from GitHub repository
-dsh plugin --profile web add github:LiuRJ99/dsh-tool-lazy-gate
+# Install the verified v0.1.2 release tag
+dsh plugin --profile web add github:LiuRJ99/dsh-tool-lazy-gate#v0.1.2
 
 # Install from local checkout
 dsh plugin --profile web add <path>/dsh-tool-lazy-gate
 ```
+
+The v0.1.2 release includes a temporary DSH 0.1.5 Web connection workaround;
+remove that bundle patch after the official `@deepseek-ai/dsh-client-connection`
+registration fix is available.
 
 ## Configuration
 
