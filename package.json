@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-lazy-gate",
   "description": "Session-lazy capability gate for DSH: hides and blocks high-privilege tool families (browser_*, computer_use_*) until the user explicitly invokes the matching skill, with a bypass-proof execution guard and resume reconstruction",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publishConfig": {
     "access": "public"
   },
@@ -65,22 +65,22 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.1"
+    "@deepseek-ai/schemastery": "3.18.4"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-agent": ">=0.1.2-rc.1 <0.2.0",
-    "@deepseek-ai/dsh-settings": ">=0.1.2-rc.1 <0.2.0",
-    "@deepseek-ai/dsh-system-prompt": ">=0.1.2-rc.1 <0.2.0",
-    "@deepseek-ai/dsh-tools": ">=0.1.2-rc.1 <0.2.0"
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-agent": ">=0.1.7-rc.1 <0.2.0",
+    "@deepseek-ai/dsh-settings": ">=0.1.7-rc.1 <0.2.0",
+    "@deepseek-ai/dsh-system-prompt": ">=0.1.7-rc.1 <0.2.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.7-rc.1 <0.2.0"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-agent": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-settings": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-system-prompt": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
-    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/dsh-agent": "0.1.7-rc.1",
+    "@deepseek-ai/dsh-settings": "0.1.7-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.1.7-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.7-rc.1",
+    "@deepseek-ai/schemastery": "3.18.4",
     "@types/node": "^22.20.0",
     "esbuild": "^0.25.0",
     "typescript": "^6.0.3",

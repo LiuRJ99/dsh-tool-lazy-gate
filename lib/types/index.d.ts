@@ -100,7 +100,31 @@ export interface DiscoveredSkillGateAssociation extends SkillGateAssociation {
 export interface Config {
     capabilities: Record<string, Capability>;
 }
-export declare const Config: z<Config>;
+export declare const Config: z<NoInfer<Schemastery.ObjectS<NoInfer<{
+    capabilities: z<import("@deepseek-ai/cosmokit").Dict<{
+        enabled?: boolean | null | undefined;
+        skillNames?: string[] | null | undefined;
+        toolPrefixes?: string[] | null | undefined;
+        promptSections?: string[] | null | undefined;
+    } & import("@deepseek-ai/cosmokit").Dict, string>, import("@deepseek-ai/cosmokit").Dict<Schemastery.ObjectT<NoInfer<{
+        enabled: z<boolean, boolean, "defined">;
+        skillNames: z<string[], string[], "defined">;
+        toolPrefixes: z<string[], string[], "defined">;
+        promptSections: z<string[], string[], "defined">;
+    }>>, string>, "defined">;
+}>>>, NoInfer<Schemastery.ObjectT<NoInfer<{
+    capabilities: z<import("@deepseek-ai/cosmokit").Dict<{
+        enabled?: boolean | null | undefined;
+        skillNames?: string[] | null | undefined;
+        toolPrefixes?: string[] | null | undefined;
+        promptSections?: string[] | null | undefined;
+    } & import("@deepseek-ai/cosmokit").Dict, string>, import("@deepseek-ai/cosmokit").Dict<Schemastery.ObjectT<NoInfer<{
+        enabled: z<boolean, boolean, "defined">;
+        skillNames: z<string[], string[], "defined">;
+        toolPrefixes: z<string[], string[], "defined">;
+        promptSections: z<string[], string[], "defined">;
+    }>>, string>, "defined">;
+}>>>, "volatile">;
 /**
  * Read the opt-in association published by an adapted skill plugin.
  *
@@ -136,5 +160,7 @@ export declare function userInvokedSkillName(event: unknown): string | undefined
  * forge the gesture.
  */
 export declare function userInvokedSkillNames(messages: readonly unknown[]): string[];
-export declare function apply(ctx: Context, config?: Config): void;
+export declare function apply(ctx: Context, config?: Config | {
+    get(): Config;
+}): void;
 //# sourceMappingURL=index.d.ts.map

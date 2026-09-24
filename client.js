@@ -9,11 +9,11 @@ window.__ModuleLoader__.load({
     const { useEffect, useRef, useState, useSyncExternalStore } = React
 
     const SETTINGS_NS = 'tool-lazy-gate'
-    const SETTINGS_SLOT = 'settings.section'
+    const SETTINGS_SLOT = 'settings.plugins.tab'
     const SETTINGS_SECTION_ID = 'tool-lazy-gate'
     const SETTINGS_NAV_MARKER = 'data-dsh-lazy-gate-settings-nav'
 
-    const inject = ['slots', 'locale', 'settingsScope', 'connection']
+    const inject = ['slots', 'locale', 'configForms', 'connection']
 
     const copy = {
       zh: {
@@ -768,7 +768,7 @@ window.__ModuleLoader__.load({
           for (const [key, cap] of Object.entries(caps)) {
             normalizedCaps[key] = normalizedCapability(cap, adaptedAssociations, filterUnknownSkills)
           }
-          await settingsScope.set('capabilities', normalizedCaps)
+          if (!await settingsScope.set('capabilities', normalizedCaps)) throw new Error('settings write was refused')
           setSaveNotice({ type: 'success', text: t.saved })
           setTimeout(() => setSaveNotice(null), 3500)
         } catch (error) {
@@ -1001,7 +1001,7 @@ window.__ModuleLoader__.load({
         const zh = (ctx.locale?.current || 'zh').startsWith('zh')
         return zh ? copy.zh.tab : copy.en.tab
       }
-      const settingsScope = ctx.settingsScope.bind({ namespace: SETTINGS_NS })
+      const settingsScope = ctx.configForms.get(SETTINGS_NS)
 
       if (ctx.effect) {
         ctx.effect(() => registerSettingsNavIcon(label), 'dsh-tool-lazy-gate: settings nav icon')

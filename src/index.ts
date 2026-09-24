@@ -125,10 +125,6 @@ const capabilitySchema = z.object({
   promptSections: z.array(z.string()).default([]),
 })
 
-export const Config: z<Config> = z.object({
-  capabilities: z.dict(capabilitySchema).default({}),
-})
-
 /** Fallback capabilities used when no config is supplied. */
 const DEFAULT_CAPABILITIES: Record<string, Capability> = {
   browser: {
@@ -144,6 +140,10 @@ const DEFAULT_CAPABILITIES: Record<string, Capability> = {
     promptSections: ['tool:computer', 'tool:computer-policy'],
   },
 }
+
+export const Config = z.object({
+  capabilities: z.dict(capabilitySchema).default(DEFAULT_CAPABILITIES),
+}).volatile()
 
 /**
  * Normalize a metadata/config list without retaining borrowed values. The
@@ -648,12 +648,12 @@ function gate(session: { snapshotEvents(): readonly unknown[] }, agent: Agent, c
 
 /** Read the live capability list: settings user layer wins, then config, then defaults. */
 function readCapabilities(
-  settings: { get(ns: string): unknown } | undefined,
-  config: Config,
+  settings: { describe(): readonly { ns: string; value: unknown }[] } | undefined,
+  config: Config | { get(): Config },
   associations: Record<string, SkillGateAssociation> = DEFAULT_SKILL_ASSOCIATIONS,
 ): Record<string, Capability> {
-  const fromSettings = settings === undefined ? undefined : settings.get(GATE_NAMESPACE)
-  // `settings.get` returns the schema-resolved value (base + user layer +
+  const fromSettings = settings?.describe().find(entry => entry.ns === GATE_NAMESPACE)?.value
+  // `settings.describe` returns the schema-resolved value (base + user layer +
   // defaults), so `capabilities` is always present once the namespace is
   // registered — including an explicit empty dict, which means "gate nothing".
   if (fromSettings !== undefined && typeof fromSettings === 'object' && fromSettings !== null) {
@@ -662,7 +662,7 @@ function readCapabilities(
       return enabledCapabilities(capabilitiesFromSkillAssociations(caps as Record<string, Capability>, associations))
     }
   }
-  const fromConfig = config.capabilities ?? {}
+  const fromConfig = ('get' in config ? config.get() : config).capabilities ?? {}
   if (Object.keys(fromConfig).length > 0) {
     return enabledCapabilities(capabilitiesFromSkillAssociations(fromConfig, associations))
   }
@@ -670,11 +670,11 @@ function readCapabilities(
 }
 
 /** Get the live settings scope, or undefined when no settings provider is mounted. */
-function settingsScope(ctx: Context): { get(ns: string): unknown } | undefined {
-  return ctx.get('settings') as { get(ns: string): unknown } | undefined
+function settingsScope(ctx: Context): { describe(): readonly { ns: string; value: unknown }[] } | undefined {
+  return ctx.get('settings')
 }
 
-export function apply(ctx: Context, config: Config = {} as Config): void {
+export function apply(ctx: Context, config: Config | { get(): Config } = {} as Config): void {
   // Host plugins use this service to authorize a live agent without fabricating
   // a slash command or durable skill-invocation event. Its only state is the
   // target session's weak in-memory gate state.
@@ -715,12 +715,8 @@ export function apply(ctx: Context, config: Config = {} as Config): void {
   // capability list. The composition `base` seeds it from `cordis.patch.yml`;
   // `applies: 'live'` reflects that changes take effect on the next session
   // (route A: no in-flight session is re-gated).
-  ctx.inject(['settings'], (settingsCtx) => {
-    settingsCtx.settings.register(GATE_NAMESPACE, Config, {
-      base: { capabilities: config.capabilities ?? DEFAULT_CAPABILITIES },
-      applies: 'live',
-    })
-  })
+  // Config is projected by the Host settings service from this entry's
+  // volatile schema. New sessions read the latest value on their first step.
 
   // The first real pre-step remains the session's configuration snapshot and
   // enforcement boundary. An empty session can be created before its first
