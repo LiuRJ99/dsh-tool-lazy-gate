@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.4] - 2026-09-25
+
+### Changed
+
+- Moved Lazy Gate settings to the first-level DSH Settings sidebar.
+
 ## [0.1.2] - 2026-09-11
 
 ### Fixed

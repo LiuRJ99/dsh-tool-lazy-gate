@@ -44,7 +44,7 @@ registration fix is available.
 ## Configuration
 
 The seed list lives in `cordis.patch.yml` and is also registered as a
-**durable settings namespace** (`tool-lazy-gate`), so the configuration page
+**durable settings namespace** (`tool-lazy-gate`), shown under the first-level **Settings → Lazy Gate** entry, so the configuration page
 renders it and edits persist to the user settings document. `skillNames` is the
 only user-facing selector: `toolPrefixes` and `promptSections` are derived from
 the selected skill's adapted-plugin association and are not independent UI

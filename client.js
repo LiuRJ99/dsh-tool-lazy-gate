@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
     const { useEffect, useRef, useState, useSyncExternalStore } = React
 
     const SETTINGS_NS = 'tool-lazy-gate'
-    const SETTINGS_SLOT = 'settings.plugins.tab'
+    const SETTINGS_SLOT = 'settings.section'
     const SETTINGS_SECTION_ID = 'tool-lazy-gate'
     const SETTINGS_NAV_MARKER = 'data-dsh-lazy-gate-settings-nav'
 

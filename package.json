@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-lazy-gate",
   "description": "Session-lazy capability gate for DSH: hides and blocks high-privilege tool families (browser_*, computer_use_*) until the user explicitly invokes the matching skill, with a bypass-proof execution guard and resume reconstruction",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publishConfig": {
     "access": "public"
   },
