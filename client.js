@@ -20,7 +20,7 @@ window.__ModuleLoader__.load({
         tab: '能力门控',
         title: '会话能力门控 (Lazy Gate)',
         intro: '高权限工具（如浏览器、电脑操作）默认锁定。仅当你在当前会话显式调用对应技能时才解锁，防止智能体误用与绕路。配置对新会话即时生效。',
-        statusSummary: (total, enabled) => `已配置 ${total} 个能力（${enabled} 个已启用）`,
+        statusSummary: (total, enabled, loaded) => `已配置 ${total} 个能力 · 已启用 ${enabled} 个${loaded === undefined ? "" : ` · 已加载 ${loaded} 个`}`,
         add: '+ 新增能力门控',
         remove: '删除',
         enabled: '已启用',
@@ -53,7 +53,7 @@ window.__ModuleLoader__.load({
         tab: 'Lazy Gate',
         title: 'Session Capability Gate (Lazy Gate)',
         intro: 'High-privilege tools (Browser, Computer Use, etc.) are locked by default. They are unlocked only when you explicitly invoke the corresponding skill in the current session. Settings take effect on new sessions.',
-        statusSummary: (total, enabled) => `${total} capabilities configured (${enabled} enabled)`,
+        statusSummary: (total, enabled, loaded) => `${total} configured · ${enabled} enabled${loaded === undefined ? "" : ` · ${loaded} loaded`}`,
         add: '+ Add Capability Gate',
         remove: 'Delete',
         enabled: 'Enabled',
@@ -233,6 +233,21 @@ window.__ModuleLoader__.load({
         borderRadius: '6px',
         fontSize: '12px',
         transition: 'color 0.15s ease, background 0.15s ease',
+      },
+      refreshBtn: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: '30px',
+        height: '30px',
+        flex: '0 0 auto',
+        padding: 0,
+        border: 'none',
+        borderRadius: '8px',
+        background: 'transparent',
+        color: 'var(--dsw-alias-label-secondary, #717782)',
+        cursor: 'pointer',
+        transition: 'background 0.15s ease, color 0.15s ease',
       },
       field: {
         display: 'flex',
@@ -680,14 +695,17 @@ window.__ModuleLoader__.load({
         () => undefined,
       )
       const [refresh, setRefresh] = useState(0)
+      const [isDiscovering, setIsDiscovering] = useState(true)
 
       // Auto-discover only adapted skill associations from the host.
       useEffect(() => {
         let cancelled = false
         if (!connection?.rpc?.call) {
           setDiscovery({ state: 'failed', skills: builtinSkillList(), toolGroups: [], sections: [] })
+          setIsDiscovering(false)
           return
         }
+        setIsDiscovering(true)
         connection.rpc.call('/tool-lazy-gate', 'discover', { sessionId }).then((raw) => {
           if (cancelled) return
           if (raw && raw.ok && raw.value) {
@@ -704,6 +722,8 @@ window.__ModuleLoader__.load({
           }
         }).catch(() => {
           if (!cancelled) setDiscovery({ state: 'failed', skills: builtinSkillList(), toolGroups: [], sections: [] })
+        }).finally(() => {
+          if (!cancelled) setIsDiscovering(false)
         })
         return () => { cancelled = true }
       }, [connection, sessionId, refresh, snapshot.revision])
@@ -806,6 +826,10 @@ window.__ModuleLoader__.load({
       const keys = Object.keys(caps)
       const totalCount = keys.length
       const enabledCount = keys.filter((k) => caps[k]?.enabled !== false).length
+      const loadedStates = new Set(['available', 'locked', 'unlocked', 'gate-disabled', 'next-session'])
+      const loadedCount = discovery.state === 'ready'
+        ? keys.filter(key => loadedStates.has(discovery.capabilities?.find(row => row.key === key)?.status)).length
+        : undefined
 
       const skills = discovery.declaredSkills || discovery.skills || []
       const skillOptions = skills.map((s) => ({ value: s.name, label: s.name }))
@@ -825,10 +849,27 @@ window.__ModuleLoader__.load({
               background: enabledCount > 0 ? '#22c55e' : '#9ca3af',
             },
           }),
-          React.createElement('span', null, t.statusSummary(totalCount, enabledCount)),
+          React.createElement('span', null, t.statusSummary(totalCount, enabledCount, loadedCount)),
           discovery.state === 'loading' && React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px' } }, `· ${t.discovering}`),
           discovery.state === 'failed' && React.createElement('span', { style: { color: '#d97706', fontSize: '12px' } }, `· ${t.discoverFailed}`),
-          React.createElement('button', { type: 'button', onClick: () => setRefresh(value => value + 1) }, t.refresh),
+          React.createElement('button', {
+            type: 'button',
+            style: { ...styles.refreshBtn, ...(isDiscovering ? styles.btnDisabled : {}) },
+            title: t.refresh,
+            'aria-label': t.refresh,
+            'aria-busy': isDiscovering,
+            disabled: isDiscovering,
+            onClick: () => setRefresh(value => value + 1),
+            onMouseEnter: event => { event.currentTarget.style.background = 'var(--dsw-alias-bg-layer-2, rgba(31, 35, 41, 0.06))' },
+            onMouseLeave: event => { event.currentTarget.style.background = 'transparent' },
+          }, React.createElement('svg', {
+            width: 17, height: 17, viewBox: '0 0 24 24', fill: 'none',
+            stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round',
+            'aria-hidden': true,
+          },
+            React.createElement('path', { d: 'M20 7v5h-5M4 17v-5h5' }),
+            React.createElement('path', { d: 'M6.1 6.1a8 8 0 0 1 13.2 3.1L20 12M4 12l.7 2.8a8 8 0 0 0 13.2 3.1' }),
+          )),
         ),
         React.createElement('form', {
           style: { display: 'flex', flexDirection: 'column', gap: '16px' },
@@ -855,7 +896,6 @@ window.__ModuleLoader__.load({
                       opacity: isCapEnabled ? 1 : 0.72,
                     },
                   },
-                    resourceStatus && React.createElement('div', { style: { padding: '8px 14px', fontSize: '12px' }, role: 'status' }, t.resourceStatus[resourceStatus]),
                     React.createElement('div', {
                       style: {
                         ...styles.cardHeader,
@@ -893,6 +933,7 @@ window.__ModuleLoader__.load({
                           onChange: (event) => renameCap(key, event.currentTarget.value),
                         }),
                         badges && React.createElement('span', { style: styles.cardBadge }, badges),
+                        resourceStatus && resourceStatus !== 'available' && resourceStatus !== 'gate-disabled' && React.createElement('span', { style: styles.cardBadge, role: 'status' }, t.resourceStatus[resourceStatus]),
                       ),
                       React.createElement('div', {
                         style: styles.cardActions,

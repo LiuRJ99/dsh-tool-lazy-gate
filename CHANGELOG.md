@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.7] - 2026-10-09
+
+- Summarize configured, enabled and loaded capabilities once at the top of settings.
+- Keep meaningful session and error states as compact badges instead of repeating loaded notices on every card.
+- Use an accessible, theme-aware refresh icon button and prevent duplicate refresh requests.
+
 ## [0.1.6] - 2026-10-09
 
 - Fix the real Host catalog snapshot: tools are collected before the assembly waterfall, so restrictions must also project the current assembly.
