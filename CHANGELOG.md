@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.6] - 2026-10-09
+
+- Fix the real Host catalog snapshot: tools are collected before the assembly waterfall, so restrictions must also project the current assembly.
+- Restore newly unlocked gate-hidden schemas before downstream transforms, without bypassing other restrictions.
+- Add regression coverage using the official 0.2.0-rc.2 SystemPrompt implementation.
+
 ## [0.1.5] - 2026-10-09
 
 - Synchronize trusted claimed user gestures, tool visibility, prompts and guards before the first request on official DSH 0.2.0-rc.2.

@@ -799,19 +799,39 @@ export function apply(ctx: Context, config: Config | { get(): Config } = {} as C
     return `"${execution.name}" is locked in this session; the user must first invoke the matching skill (e.g. /${skillHint})`
   })
 
-  // Update permissions BEFORE next() assembles tools and prompt sections. The
-  // later pre-step listener remains a compatibility/resume backstop, not the
-  // first visibility boundary.
-  ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+  // Host providers have already collected schemas before this waterfall.
+  // Synchronize that snapshot before downstream transforms, preserving their
+  // schema changes; scoped restrictions alone would lag by one model request.
+  ctx.on('system-prompt/assemble', async (assembly, context, next) => {
     const agent = context.agent as Agent | undefined
     if (agent === undefined) return next()
     const catalog = await associationCatalog()
+    const previousState = stateBySession.get(agent.session)
+    const previouslyDenied = new Set(Object.values(previousState?.entries ?? {})
+      .flatMap(entry => [...(entry.deniedTools ?? [])]))
     const state = gate(agent.session, agent, readCapabilities(settingsScope(ctx), config, catalog.associations))
     unlockForSkillNames(state, [...(claimedSkills.get(agent) ?? [])])
     claimedSkills.delete(agent)
     unlockForSkillNames(state, inheritedUnlockSkillNames(ctx, agent))
+    const visible = agent.ctx.tools.schemas(agent)
+    const visibleNames = new Set(visible.map(tool => tool.name))
+    const allowed = (tool: { name: string }): boolean => {
+      const key = capabilityForTool(state.capabilities, tool.name)
+      return key === undefined || (state.entries[key]?.unlocked === true && visibleNames.has(tool.name))
+    }
+    if (Array.isArray(assembly.tools)) {
+      const kept = assembly.tools.filter(allowed)
+      const present = new Set(kept.map(tool => tool.name))
+      // Restore only schemas hidden by THIS gate, and still visible under all
+      // other restrictions. Do this before next() so downstream middleware can
+      // transform restored schemas as it does on subsequent assemblies.
+      const restored = visible.filter(tool => previouslyDenied.has(tool.name)
+        && !present.has(tool.name) && allowed(tool))
+      assembly.tools = [...kept, ...restored]
+    }
     const assembled = await next()
-    let filtered = false
+    const tools = assembled.tools?.filter(allowed)
+    let filtered = tools !== undefined && tools.length !== assembled.tools.length
     const sections = assembled.sections.filter(section => {
       for (const [key, cap] of Object.entries(state.capabilities)) {
         if (state.entries[key]?.unlocked) continue
@@ -823,7 +843,7 @@ export function apply(ctx: Context, config: Config | { get(): Config } = {} as C
       return true
     })
     if (!filtered) return assembled
-    return { ...assembled, sections }
+    return { ...assembled, sections, ...(tools === undefined ? {} : { tools }) }
   })
 
   // Discovery RPC for the configuration page. Resource candidates come only

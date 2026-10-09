@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import {
   apply,
   capabilitiesFromSkillAssociations,
@@ -413,6 +415,50 @@ describe('capability gate state machine (including first-assembly and no-plugin 
     expect(open.sections.map((section: any) => section.name)).toEqual(['tool:bridge-browser'])
     expect(getGuard()?.({ agent, name: 'computer_use_click' })).toContain('locked')
     expect(getGuard()?.({ agent, name: 'browser_snapshot' })).toBeUndefined()
+  })
+
+  it('projects the official 0.2 Host pre-collected catalog and restores only gate-denied schemas in the same request', async () => {
+    const { context, handlers } = createMockContext()
+    const denied = new Set<string>()
+    const allTools = ['browser_snapshot', 'computer_use_click', 'bash'].map(name => ({
+      name, description: name, parameters: { type: 'object', properties: {} },
+    }))
+    const externalDeny = new Set<string>(['browser_external'])
+    allTools.push({ name: 'browser_external', description: '', parameters: { type: 'object', properties: {} } })
+    const agent = { session: { snapshotEvents: () => [] }, ctx: { tools: {
+      schemas: () => allTools.filter(tool => !denied.has(tool.name) && !externalDeny.has(tool.name)),
+      restrict: ({ deny }: { deny: string[] }) => {
+        for (const name of deny) denied.add(name)
+        return () => { for (const name of deny) denied.delete(name) }
+      },
+    } } }
+    apply(context as never, { capabilities: CAPS })
+    const host = new Context()
+    const fiber = host.plugin(SystemPrompt, { includeHarnessIdentity: false })
+    await new Promise<void>(resolve => setImmediate(resolve))
+    try {
+      host.systemPrompt.tools(() => ({ schemas: agent.ctx.tools.schemas() }))
+      host.on('system-prompt/assemble', handlers.get('system-prompt/assemble')![0]! as never)
+      host.on('system-prompt/assemble', async (assembly, _context, next) => {
+        // Downstream transforms must apply to newly restored tools too.
+        for (const tool of assembly.tools) tool.parameters = { ...tool.parameters, 'x-transformed': true }
+        return next()
+      })
+      const assemble = () => host.systemPrompt.assemble({ agent } as never)
+      expect((await assemble()).tools.map(tool => tool.name)).toEqual(['bash'])
+      allTools.push({ name: 'browser_new', description: '', parameters: { type: 'object', properties: {} } })
+      expect((await assemble()).tools.map(tool => tool.name)).toEqual(['bash'])
+      const claim = handlers.get('agent/inbox/claimed')![0]!
+      claim({ agent, message: { source: { kind: 'assistant' }, content: [{ type: 'text', text: '/browser' }] } })
+      expect((await assemble()).tools.map(tool => tool.name)).toEqual(['bash'])
+      claim({ agent, message: { source: { kind: 'user' }, content: [{ type: 'text', text: '/browser' }] } })
+      const open = await assemble()
+      expect(open.tools.map(tool => tool.name).sort()).toEqual(['bash', 'browser_new', 'browser_snapshot'])
+      expect(open.tools.every(tool => tool.parameters['x-transformed'] === true)).toBe(true)
+      expect(open.tools.some(tool => externalDeny.has(tool.name))).toBe(false)
+    } finally {
+      await fiber.dispose()
+    }
   })
 
   // Case 1: Initial state - tools are locked by default and denied via tools.restrict
