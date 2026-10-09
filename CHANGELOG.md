@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.5] - 2026-10-09
+
+- Synchronize trusted claimed user gestures, tool visibility, prompts and guards before the first request on official DSH 0.2.0-rc.2.
+- Refresh resource discovery after plugin registrations change, retain inactive declarations, and show distinct plugin/resource/session states.
+- Add regression coverage for first assembly, model non-grants and dynamic discovery.
+
 ## [0.1.4] - 2026-09-25
 
 ### Changed

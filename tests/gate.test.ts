@@ -172,6 +172,31 @@ describe('skill-driven Tool/Prompt associations', () => {
 })
 
 describe('discovery exposes only adapted skill resources', () => {
+  it('refreshes registrations and distinguishes a disabled plugin from unavailable resources', async () => {
+    let handler: any
+    let enabled = false
+    let registered = false
+    const skill = { name: 'decision-control', invocation: { userInvocable: true }, metadata: { 'dsh:gate': {
+      toolPrefixes: ['decision_'], promptSections: [], settingsNamespace: 'decision-engine',
+    } } }
+    const context = {
+      get: (name: string) => name === 'skills' ? { list: async () => [skill], get: async () => skill }
+        : name === 'settings' ? { describe: () => [{ ns: 'decision-engine', value: { enabled } }] } : undefined,
+      inject: (_deps: string[], cb: any) => cb({ get: (name: string) => name === 'connection' ? { rpc: { handle: (_path: string, fn: any) => { handler = fn } } } : undefined }),
+      on: () => undefined,
+      tools: { guard: () => undefined, schemas: () => registered ? [{ name: 'decision_decide' }] : [] },
+    }
+    apply(context as never, { capabilities: { decision: { enabled: true, skillNames: ['decision-control'], toolPrefixes: [], promptSections: [] } } })
+    expect((await handler('discover', {})).value.capabilities[0].status).toBe('plugin-disabled')
+    enabled = true
+    expect((await handler('discover', {})).value.capabilities[0].status).toBe('unavailable')
+    registered = true
+    expect((await handler('discover', {})).value.capabilities[0].status).toBe('available')
+    expect((await handler('discover', {})).value.enabledSkills[0].name).toBe('decision-control')
+    registered = false
+    expect((await handler('discover', {})).value.skills).toEqual([])
+    expect((await handler('discover', {})).value.declaredSkills[0].name).toBe('decision-control')
+  })
   it('does not surface unannotated plugin tools or prompt sections', async () => {
     let discoverHandler: ((endpoint: string, payload: unknown) => Promise<any>) | undefined
     const connection = {
@@ -359,6 +384,36 @@ describe('capability gate state machine (including first-assembly and no-plugin 
       },
     }
   }
+
+  it('synchronizes the first tool catalog with a claimed user gesture before pre-step, never model input', async () => {
+    const { context, handlers, getGuard } = createMockContext()
+    const denied = new Set<string>()
+    const allTools = [{ name: 'browser_snapshot' }, { name: 'computer_use_click' }, { name: 'bash' }]
+    const session = { snapshotEvents: () => [] }
+    const agent = { session, ctx: { tools: {
+      schemas: () => allTools.filter(tool => !denied.has(tool.name)),
+      restrict: ({ deny }: { deny: string[] }) => {
+        for (const name of deny) denied.add(name)
+        return () => { for (const name of deny) denied.delete(name) }
+      },
+    } } }
+    apply(context as never, { capabilities: CAPS })
+    const assemble = handlers.get('system-prompt/assemble')![0]!
+    const next = async () => ({ tools: agent.ctx.tools.schemas(), sections: [{ name: 'tool:bridge-browser' }, { name: 'tool:computer' }] })
+    const locked = await assemble({}, { agent }, next)
+    expect(locked.tools.map((tool: any) => tool.name)).toEqual(['bash'])
+    allTools.push({ name: 'browser_new_tool' })
+    expect((await assemble({}, { agent }, next)).tools.map((tool: any) => tool.name)).toEqual(['bash'])
+    const claim = handlers.get('agent/inbox/claimed')![0]!
+    claim({ agent, message: { source: { kind: 'tool-registry' }, content: [{ type: 'text', text: '/browser' }] } })
+    expect((await assemble({}, { agent }, next)).tools.map((tool: any) => tool.name)).toEqual(['bash'])
+    claim({ agent, message: { source: { kind: 'user' }, content: [{ type: 'text', text: '/browser' }] } })
+    const open = await assemble({}, { agent }, next)
+    expect(open.tools.map((tool: any) => tool.name)).toEqual(['browser_snapshot', 'bash', 'browser_new_tool'])
+    expect(open.sections.map((section: any) => section.name)).toEqual(['tool:bridge-browser'])
+    expect(getGuard()?.({ agent, name: 'computer_use_click' })).toContain('locked')
+    expect(getGuard()?.({ agent, name: 'browser_snapshot' })).toBeUndefined()
+  })
 
   // Case 1: Initial state - tools are locked by default and denied via tools.restrict
   it('Case 1: initial session start locks tools and calls tools.restrict with matching prefixes', async () => {

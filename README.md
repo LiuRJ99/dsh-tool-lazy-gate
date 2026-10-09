@@ -30,8 +30,8 @@ temptation while keeping the capability one explicit user gesture away.
 ## Install
 
 ```sh
-# Install the verified v0.1.2 release tag
-dsh plugin --profile web add github:LiuRJ99/dsh-tool-lazy-gate#v0.1.2
+# Install the verified v0.1.5 release tag
+dsh plugin --profile web add github:LiuRJ99/dsh-tool-lazy-gate#v0.1.5
 
 # Install from local checkout
 dsh plugin --profile web add <path>/dsh-tool-lazy-gate
@@ -133,3 +133,7 @@ capabilities:
 After the plugin publishes the association, no `dsh-tool-lazy-gate` source
 change is required. The settings page will discover the skill and derive both
 resource lists automatically.
+
+## First-request synchronization on DSH 0.2
+
+Requires the official DSH 0.2.0-rc.2 `agent/inbox/claimed` event. Trusted user gestures are consumed before tool/prompt assembly; queued, discarded and model-generated input never grants access. The execution guard stays active. Discovery reads current registrations on every request, and Settings can refresh plugin/resource/session status. Adapted control skills may remain registered while their plugin is disabled, with `metadata["dsh:gate"].settingsNamespace` naming the owner settings namespace. A declaration alone never counts as a registered resource.

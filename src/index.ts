@@ -47,6 +47,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-agent-loop'
 import type {} from '@deepseek-ai/dsh-settings'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-tools'
@@ -273,6 +274,9 @@ interface SkillAssociationCatalog {
   associations: Record<string, SkillGateAssociation>
   /** Only associations whose declared resources are currently registered. */
   skills: DiscoveredSkillGateAssociation[]
+  /** Declarations remain visible for diagnostics even while their plugin is off. */
+  declaredSkills: DiscoveredSkillGateAssociation[]
+  disabledSkills: Set<string>
 }
 
 function liveToolNames(ctx: Context): string[] {
@@ -306,6 +310,7 @@ async function livePromptSectionNames(ctx: Context): Promise<Set<string>> {
 async function discoverSkillAssociationCatalog(ctx: Context): Promise<SkillAssociationCatalog> {
   const associations = cloneAssociations(DEFAULT_SKILL_ASSOCIATIONS)
   const skills = ctx.get('skills') as SkillsService | undefined
+  const disabledSkills = new Set<string>()
   let listedUserSkills: Set<string> | undefined
 
   if (skills?.list !== undefined) {
@@ -328,7 +333,17 @@ async function discoverSkillAssociationCatalog(ctx: Context): Promise<SkillAssoc
             }
           }
           const declared = skillGateAssociation(definition)
-          if (declared !== undefined) associations[summary.name] = declared
+          if (declared !== undefined) {
+            associations[summary.name] = declared
+            const metadata = definition.metadata as Record<string, unknown> | undefined
+            const gateMetadata = metadata?.[GATE_METADATA_KEY] as { settingsNamespace?: unknown } | undefined
+            if (typeof gateMetadata?.settingsNamespace === 'string') {
+              const value = settingsScope(ctx)?.describe().find(row => row.ns === gateMetadata.settingsNamespace)?.value
+              if (typeof value === 'object' && value !== null && (value as { enabled?: unknown }).enabled === false) {
+                disabledSkills.add(summary.name)
+              }
+            }
+          }
         }
       }
     } catch {
@@ -356,13 +371,15 @@ async function discoverSkillAssociationCatalog(ctx: Context): Promise<SkillAssoc
   }
   visibleSkills.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
 
-  return { associations, skills: visibleSkills }
+  const declaredSkills = Object.entries(associations).map(([name, linked]) => ({ name, ...linked }))
+  return { associations, skills: visibleSkills, declaredSkills, disabledSkills }
 }
 
 /** Per-session gate state, keyed by the durable Session object. */
 interface GateEntry {
   unlocked: boolean
   disposer: (() => void) | undefined
+  deniedTools?: Set<string>
 }
 
 interface GateState {
@@ -621,19 +638,22 @@ function restoreState(session: { snapshotEvents(): readonly unknown[] }, capabil
   return state
 }
 
-/** Apply the per-session deny for every still-locked capability group once. */
+/** Extend each locked restriction when newly registered tools appear. */
 function enforceGate(agent: Agent, state: GateState): void {
-  if (state.enforced) return
-
   const tools = agent.ctx.tools
   const visible = new Set(tools.schemas(agent).map(tool => tool.name))
 
   for (const [key, cap] of Object.entries(state.capabilities)) {
     const entry = state.entries[key]
-    if (entry === undefined || entry.unlocked || entry.disposer !== undefined) continue
-    const deny = [...visible].filter(toolName => cap.toolPrefixes.some(prefix => toolName.startsWith(prefix)))
+    if (entry === undefined || entry.unlocked) continue
+    const deny = [...visible].filter(toolName => !entry.deniedTools?.has(toolName)
+      && cap.toolPrefixes.some(prefix => toolName.startsWith(prefix)))
     if (deny.length === 0) continue
-    entry.disposer = tools.restrict({ deny })
+    const previous = entry.disposer
+    const dispose = tools.restrict({ deny })
+    entry.disposer = () => { try { dispose() } finally { previous?.() } }
+    entry.deniedTools ??= new Set<string>()
+    for (const name of deny) entry.deniedTools.add(name)
   }
 
   state.enforced = true
@@ -699,17 +719,25 @@ export function apply(ctx: Context, config: Config | { get(): Config } = {} as C
     },
   } satisfies ToolLazyGateService)
 
-  // Resolve skill associations once per catalog generation. The result is shared
-  // by the first system-prompt assembly, the pre-step snapshot, and the settings
-  // discovery RPC so all three surfaces agree on what a skill unlocks.
-  // Defer the first catalog read until a real session/page request. This lets
-  // later composition rows finish registering their skills before fallback
-  // entries are pruned as absent.
+  // Share concurrent reads only. Never retain a settled catalog across plugin
+  // registration/unloading: a settings refresh must see the current resources.
   let associationPromise: Promise<SkillAssociationCatalog> | undefined
   const associationCatalog = (): Promise<SkillAssociationCatalog> => {
-    associationPromise ??= discoverSkillAssociationCatalog(ctx)
+    associationPromise ??= discoverSkillAssociationCatalog(ctx).finally(() => { associationPromise = undefined })
     return associationPromise
   }
+
+  // claim() emits synchronously before prompt assembly. Capture only trusted
+  // USER input, then consume it in the awaited assembly hook. Queueing or
+  // discarding input cannot grant access, and model messages remain ineligible.
+  const claimedSkills = new WeakMap<object, Set<string>>()
+  ctx.on('agent/inbox/claimed', ({ agent, message }) => {
+    const names = userInvokedSkillNames([message])
+    if (names.length === 0) return
+    const pending = claimedSkills.get(agent) ?? new Set<string>()
+    for (const name of names) pending.add(name)
+    claimedSkills.set(agent, pending)
+  })
 
   // Register the durable settings namespace so a configuration UI renders the
   // capability list. The composition `base` seeds it from `cordis.patch.yml`;
@@ -771,16 +799,17 @@ export function apply(ctx: Context, config: Config | { get(): Config } = {} as C
     return `"${execution.name}" is locked in this session; the user must first invoke the matching skill (e.g. /${skillHint})`
   })
 
-  // Suppress gated capability guidance until the matching group is unlocked.
-  // Agent loop assembles the system prompt before dispatching agent/pre-step, so
-  // restore the session state here as well. This keeps the first request after
-  // creation or resume consistent with the tool guard; pre-step still owns the
-  // actual tools.restrict() call and current-message unlock.
+  // Update permissions BEFORE next() assembles tools and prompt sections. The
+  // later pre-step listener remains a compatibility/resume backstop, not the
+  // first visibility boundary.
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const agent = context.agent as Agent | undefined
     if (agent === undefined) return next()
     const catalog = await associationCatalog()
-    const state = restoreState(agent.session, readCapabilities(settingsScope(ctx), config, catalog.associations))
+    const state = gate(agent.session, agent, readCapabilities(settingsScope(ctx), config, catalog.associations))
+    unlockForSkillNames(state, [...(claimedSkills.get(agent) ?? [])])
+    claimedSkills.delete(agent)
+    unlockForSkillNames(state, inheritedUnlockSkillNames(ctx, agent))
     const assembled = await next()
     let filtered = false
     const sections = assembled.sections.filter(section => {
@@ -838,6 +867,26 @@ export function apply(ctx: Context, config: Config | { get(): Config } = {} as C
             .flatMap(capability => capability.skillNames),
         )
         const activeSkills = catalog.skills.filter(skill => activeSkillNames.has(skill.name))
+        const rawConfig = settingsScope(ctx)?.describe().find(row => row.ns === GATE_NAMESPACE)?.value
+          ?? ('get' in config ? config.get() : config)
+        const configured = (rawConfig as Config).capabilities ?? DEFAULT_CAPABILITIES
+        const sessionId = (payload as { sessionId?: unknown } | null)?.sessionId
+        const liveAgent = typeof sessionId === 'string' ? agents?.get(sessionId) : undefined
+        const state = liveAgent === undefined ? undefined : stateBySession.get(liveAgent.session)
+        const visibleNames = new Set(catalog.skills.map(skill => skill.name))
+        const capabilities = Object.entries(configured).map(([key, cap]) => {
+          const names = stringList(cap.skillNames)
+          const status = names.some(name => catalog.disabledSkills.has(name)) ? 'plugin-disabled'
+            : names.length === 0 || !names.every(name => visibleNames.has(name)) ? 'unavailable'
+            : state !== undefined && (state.capabilities[key] === undefined
+              || JSON.stringify(state.capabilities[key]?.skillNames) !== JSON.stringify(names)
+              || cap.enabled === false) ? 'next-session'
+            : cap.enabled === false ? 'gate-disabled'
+            : liveAgent === undefined ? 'available'
+            : state?.entries[key]?.unlocked === true
+              || (state === undefined && names.some(name => unlockedSkillNamesInLog(liveAgent.session).includes(name))) ? 'unlocked' : 'locked'
+          return { key, skillNames: names, status }
+        })
         const toolNames = liveToolNames(ctx)
         const toolGroups = catalog.skills
           .flatMap(skill => skill.toolPrefixes)
@@ -858,6 +907,9 @@ export function apply(ctx: Context, config: Config | { get(): Config } = {} as C
             // `skills` remains the complete adapted catalog for the lazy-gate
             // settings page, which needs to configure a newly registered row.
             skills: catalog.skills,
+            declaredSkills: catalog.declaredSkills,
+            capabilities,
+            sessionId: liveAgent?.id,
             // Taskboard and other consumers use this explicit active-only view:
             // registered + resource-backed + enabled in the current gate config.
             enabledSkills: activeSkills,

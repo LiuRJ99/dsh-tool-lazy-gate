@@ -19,8 +19,8 @@ DeepSeek Harness (DSH) 权限门控插件：默认在会话内隐藏并拦截高
 ## 安装方式
 
 ```sh
-# 安装经过验证的 v0.1.2 release tag
-dsh plugin --profile web add github:LiuRJ99/dsh-tool-lazy-gate#v0.1.2
+# 安装经过验证的 v0.1.5 release tag
+dsh plugin --profile web add github:LiuRJ99/dsh-tool-lazy-gate#v0.1.5
 
 # 从本地源码安装
 dsh plugin --profile web add <path>/dsh-tool-lazy-gate
@@ -77,3 +77,9 @@ Skill 后，两项资源会自动合并并以只读方式展示。旧配置中�
 Tool/Prompt 值会被运行时忽略，并在保存设置时清理。
 
 安装或配置后重启 `dsh web` 并刷新页面即可生效。
+
+## DSH 0.2 的首次解锁与状态
+
+需要官方 DSH 0.2.0-rc.2 的 `agent/inbox/claimed` 生命周期事件。用户输入被实际领取后，在工具清单生成之前完成解锁；未解锁的工具和提示在首个请求即隐藏，执行守卫始终生效。排队、丢弃或模型生成的消息不能授予权限。
+
+发现结果在每次请求重新读取，不保留过期的注册目录。设置页提供“刷新状态”，并区分插件关闭、资源未加载、门禁停用、会话锁定和已解锁。关闭插件仍可保留控制技能及关联声明，用于显示关闭原因；声明本身不代表工具已注册。技能可在 `metadata["dsh:gate"].settingsNamespace` 指定其设置 namespace，关闭状态由该 namespace 的 `enabled` 字段判断。

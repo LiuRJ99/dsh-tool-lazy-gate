@@ -46,6 +46,8 @@ window.__ModuleLoader__.load({
         discovering: '正在从宿主发现已适配技能及其 Tool / Prompt 关联…',
         discoverFailed: '已适配关联发现未就绪，仅显示内置关联。',
         noOptionsFound: '暂无已适配关联',
+        refresh: '刷新状态',
+        resourceStatus: { 'plugin-disabled': '插件已关闭', unavailable: '技能或资源未加载', 'gate-disabled': '门禁已停用', available: '已加载；请在会话中解锁', locked: '当前会话等待手动解锁', unlocked: '当前会话已解锁', 'next-session': '配置将在新会话生效' },
       },
       en: {
         tab: 'Lazy Gate',
@@ -77,6 +79,8 @@ window.__ModuleLoader__.load({
         discovering: 'Discovering adapted skills and their Tool / Prompt associations from host…',
         discoverFailed: 'Adapted association discovery is unavailable; showing built-in associations only.',
         noOptionsFound: 'No adapted association found',
+        refresh: 'Refresh status',
+        resourceStatus: { 'plugin-disabled': 'Plugin disabled', unavailable: 'Skill or resources unavailable', 'gate-disabled': 'Gate disabled', available: 'Loaded; unlock in a session', locked: 'Locked in this session', unlocked: 'Unlocked in this session', 'next-session': 'Applies to new sessions' },
       },
     }
 
@@ -666,6 +670,16 @@ window.__ModuleLoader__.load({
       }))
 
       const connection = ctx.connection || ctx.get?.('connection')
+      const sessions = ctx.get?.('sessions')
+      const sessionId = useSyncExternalStore(
+        listener => sessions?.list?.subscribe?.(listener) || (() => {}),
+        () => {
+          const current = sessions?.list?.getSnapshot?.().current
+          return typeof current === 'string' ? current : current?.id ?? current?.sessionId
+        },
+        () => undefined,
+      )
+      const [refresh, setRefresh] = useState(0)
 
       // Auto-discover only adapted skill associations from the host.
       useEffect(() => {
@@ -674,7 +688,7 @@ window.__ModuleLoader__.load({
           setDiscovery({ state: 'failed', skills: builtinSkillList(), toolGroups: [], sections: [] })
           return
         }
-        connection.rpc.call('/tool-lazy-gate', 'discover', {}).then((raw) => {
+        connection.rpc.call('/tool-lazy-gate', 'discover', { sessionId }).then((raw) => {
           if (cancelled) return
           if (raw && raw.ok && raw.value) {
             setDiscovery({
@@ -682,6 +696,8 @@ window.__ModuleLoader__.load({
               skills: Array.isArray(raw.value.skills) ? raw.value.skills : [],
               toolGroups: Array.isArray(raw.value.toolGroups) ? raw.value.toolGroups : [],
               sections: Array.isArray(raw.value.sections) ? raw.value.sections : [],
+              declaredSkills: Array.isArray(raw.value.declaredSkills) ? raw.value.declaredSkills : raw.value.skills || [],
+              capabilities: Array.isArray(raw.value.capabilities) ? raw.value.capabilities : [],
             })
           } else {
             setDiscovery({ state: 'failed', skills: builtinSkillList(), toolGroups: [], sections: [] })
@@ -690,9 +706,9 @@ window.__ModuleLoader__.load({
           if (!cancelled) setDiscovery({ state: 'failed', skills: builtinSkillList(), toolGroups: [], sections: [] })
         })
         return () => { cancelled = true }
-      }, [connection])
+      }, [connection, sessionId, refresh, snapshot.revision])
 
-      const adaptedAssociations = associationMap(discovery.skills, discovery.state !== 'ready')
+      const adaptedAssociations = associationMap(discovery.declaredSkills || discovery.skills, discovery.state !== 'ready')
       const filterUnknownSkills = discovery.state === 'ready'
 
       // Re-sync when durable value updates
@@ -791,7 +807,7 @@ window.__ModuleLoader__.load({
       const totalCount = keys.length
       const enabledCount = keys.filter((k) => caps[k]?.enabled !== false).length
 
-      const skills = discovery.skills || []
+      const skills = discovery.declaredSkills || discovery.skills || []
       const skillOptions = skills.map((s) => ({ value: s.name, label: s.name }))
 
       return React.createElement('div', {
@@ -812,6 +828,7 @@ window.__ModuleLoader__.load({
           React.createElement('span', null, t.statusSummary(totalCount, enabledCount)),
           discovery.state === 'loading' && React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px' } }, `· ${t.discovering}`),
           discovery.state === 'failed' && React.createElement('span', { style: { color: '#d97706', fontSize: '12px' } }, `· ${t.discoverFailed}`),
+          React.createElement('button', { type: 'button', onClick: () => setRefresh(value => value + 1) }, t.refresh),
         ),
         React.createElement('form', {
           style: { display: 'flex', flexDirection: 'column', gap: '16px' },
@@ -825,6 +842,7 @@ window.__ModuleLoader__.load({
                   const cap = normalizedCapability(caps[key], adaptedAssociations, filterUnknownSkills)
                   const isCapEnabled = cap.enabled !== false
                   const isExpanded = Boolean(expandedKeys[key])
+                  const resourceStatus = discovery.capabilities?.find(row => row.key === key)?.status
                   const badges = [
                     (cap.skillNames?.length || 0) > 0 ? `${cap.skillNames.length} 技能` : null,
                     (cap.toolPrefixes?.length || 0) > 0 ? `${cap.toolPrefixes.length} 前缀组` : null,
@@ -837,6 +855,7 @@ window.__ModuleLoader__.load({
                       opacity: isCapEnabled ? 1 : 0.72,
                     },
                   },
+                    resourceStatus && React.createElement('div', { style: { padding: '8px 14px', fontSize: '12px' }, role: 'status' }, t.resourceStatus[resourceStatus]),
                     React.createElement('div', {
                       style: {
                         ...styles.cardHeader,
