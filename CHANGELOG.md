@@ -1,3 +1,9 @@
+## 0.1.8 — 2026-10-18
+
+Align Host/framework peers and the build SDK with 0.2.1-rc.1. Retain first-request catalog projection, same-turn unlock, capability diagnostics and existing permission boundaries.
+
+Compatibility is restricted to `0.2.0-rc.2 || 0.2.1-rc.1`; no alpha or later Host is implied.
+
 # Changelog
 
 All notable changes to this project will be documented in this file.
