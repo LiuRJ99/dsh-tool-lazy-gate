@@ -1,3 +1,7 @@
+## 0.1.9 — 2026-10-18
+
+Update the connection compatibility patch to webStartup + webServer so 0.2.1-rc.1 can activate Connection without the retired webRuntime service; retain the private RPC registration workaround.
+
 ## 0.1.8 — 2026-10-18
 
 Align Host/framework peers and the build SDK with 0.2.1-rc.1. Retain first-request catalog projection, same-turn unlock, capability diagnostics and existing permission boundaries.

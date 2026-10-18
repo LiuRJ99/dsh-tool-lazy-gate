@@ -30,12 +30,11 @@ const CAPS = {
 }
 
 describe('Web bundle compatibility patch', () => {
-  it('keeps the temporary client-connection RPC workaround until the official fix', async () => {
+  it('keeps private RPC and startup authority dependencies without the retired runtime service', async () => {
     const patch = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
 
-    expect(patch).toMatch(/- id: connection\n  name: '@deepseek-ai\/dsh-client-connection'\n  inject: \[webRuntime, webServer\]/u)
-    expect(patch).toMatch(/official connection package fixes its/u)
-    expect(patch).toMatch(/registration/u)
+    expect(patch).toMatch(/- id: connection\n  name: '@deepseek-ai\/dsh-client-connection'\n  inject: \[webStartup, webServer\]/u)
+    expect(patch).not.toMatch(/inject:.*webRuntime/u)
   })
 })
 
