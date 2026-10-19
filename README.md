@@ -137,3 +137,7 @@ resource lists automatically.
 ## First-request synchronization on DSH 0.2
 
 Requires the official DSH 0.2.0-rc.2 `agent/inbox/claimed` event. Trusted user gestures are consumed before tool/prompt assembly; queued, discarded and model-generated input never grants access. The execution guard stays active. Discovery reads current registrations on every request, and Settings can refresh plugin/resource/session status. Adapted control skills may remain registered while their plugin is disabled, with `metadata["dsh:gate"].settingsNamespace` naming the owner settings namespace. A declaration alone never counts as a registered resource.
+
+## Host compatibility policy
+
+The minimum Host requirement is `>=0.2.0-rc.2`. Newer DSH versions remain eligible by default; narrow the range or adapt the implementation only when an incompatibility is confirmed. Do not maintain an allowlist of individual RCs. Fixed build SDK versions describe build inputs, not the allowed Host versions. Installation sources stay pinned to releases/tags. Qualification evidence is recorded separately: an eligible future Host is not automatically a tested Host.
